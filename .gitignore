@@ -1,0 +1,8 @@
+.venv
+Training/.venv/
+Training/Data/
+Training/Datasets/
+Training/cache_npy/
+Training/.vscode/
+Training/Models/
+Training/Statistics/
