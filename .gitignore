@@ -6,3 +6,6 @@ Training/cache_npy/
 Training/.vscode/
 Training/Models/
 Training/Statistics/
+Using/venv/
+Using/__pycache__/
+Using/Backend/__pycache__/

@@ -11,41 +11,129 @@ import torch.nn as nn
 from collections import deque
 from PIL import ImageFont, ImageDraw, Image
 from Nextion import Nextion
+from queue import Queue
+import subprocess
+import struct
+from flask import Flask, Response
+import threading
+import cv2
 
 # -------------------------
 # Настройка параметров
 # -------------------------
-xres, yres = 1920, 1080 
-stride = 3840
-fb_path = "/dev/fb0"
+isTestRun = False
 CONF_THRESHOLD = 0.4
-save_video = True
+save_video = False
+nextion_queue = Queue()
+last_gesture = None
+app = Flask(__name__)
+latest_web_frame = None
+web_lock = threading.Lock()
+
+def gen_frames():
+    global latest_web_frame
+    while True:
+        with web_lock:
+            if latest_web_frame is None:
+                continue
+            frame = latest_web_frame.copy()
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def start_flask():
+    app.run(host='0.0.0.0', port=5000, threaded=True)
+    
+# Автоматическое определение дисплея
+def auto_detect_display():
+    """Автоматически определяет параметры дисплея"""
+    try:
+        # Пробуем получить информацию через fbset
+        result = subprocess.run(['fbset', '-s'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if 'geometry' in line:
+                    parts = line.split()
+                    xres = int(parts[1])
+                    yres = int(parts[2])
+                    return xres, yres, xres * 2  # stride для RGB565
+    except:
+        pass
+    
+    try:
+        # Пробуем через xdpyinfo (если X11 доступен)
+        result = subprocess.run(['xdpyinfo'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if 'dimensions:' in line:
+                    res = line.split()[1]
+                    xres, yres = map(int, res.split('x'))
+                    return xres, yres, xres * 2
+    except:
+        pass
+    
+    # Фолбэк на стандартные разрешения
+    print("[INFO] Using fallback resolution 1920x1080")
+    return 1920, 1080, 3840
+
+# Инициализация дисплея
+xres, yres, stride = auto_detect_display()
+fb_path = "/dev/fb0"
 display_connected = os.path.exists(fb_path)
 
 if display_connected:
     try:
         fb = open(fb_path, "r+b")
         fb_map = mmap.mmap(fb.fileno(), yres * stride, mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
-        print("[INFO] Дисплей подключён.")
+        print(f"[INFO] Дисплей подключён: {xres}x{yres}")
     except Exception as e:
         print(f"[WARN] Ошибка открытия дисплея: {e}")
         display_connected = False
 else:
     print("[INFO] Дисплей не найден — вывод отключён.")
+
+# Nextion дисплей
 nx = Nextion("/dev/serial0", 9600)
+time.sleep(2)
+nx.send("page 2")
+time.sleep(1.2)
 
 def rgb565_fast(img):
-    """Быстрая конвертация BGR изображения в RGB565 формат"""
-    # Извлекаем каналы
-    r = (img[:, :, 2] >> 3).astype(np.uint16)  # Красный канал
-    g = (img[:, :, 1] >> 2).astype(np.uint16)  # Зеленый канал  
-    b = (img[:, :, 0] >> 3).astype(np.uint16)  # Синий канал
-    
-    # Собираем в RGB565 (5-6-5 бит)
-    rgb565 = (r << 11) | (g << 5) | b
-    
-    # Конвертируем в байты (little-endian)
-    return rgb565.astype(np.uint16).tobytes()
+    """Универсальная конвертация BGR в RGB565"""
+    try:
+        # Ресайз до нужного разрешения
+        if img.shape[:2] != (yres, xres):
+            img = cv2.resize(img, (xres, yres))
+        
+        # Конвертируем BGR to RGB
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Извлекаем каналы
+        r = rgb_img[:, :, 0].astype(np.uint16)  # Красный
+        g = rgb_img[:, :, 1].astype(np.uint16)  # Зеленый  
+        b = rgb_img[:, :, 2].astype(np.uint16)  # Синий
+        
+        # Конвертируем в RGB565 (5-6-5 бит)
+        rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+        
+        return rgb565.tobytes()
+    except Exception as e:
+        print(f"[ERROR] Color conversion failed: {e}")
+        # Возвращаем черный экран при ошибке
+        black_frame = np.zeros((yres, xres), dtype=np.uint16)
+        return black_frame.tobytes()
+
+def print_error(str):
+    nx.send("vis errorMSG3,1")
+    nx.set_text("errorMSG3", str)
+    print(f"\033[31m[ERROR] {str}\033[0m")
+    time.sleep(2)
 
 class SimpleTCN(nn.Module):
     def __init__(self, input_size, num_classes):
@@ -71,7 +159,7 @@ class SimpleTCN(nn.Module):
     def forward(self, x):
         x = x.permute(0, 2, 1)
         feat = self.conv(x)
-        feat = feat + torch.randn_like(feat) * 0.01  # легкий шум
+        feat = feat + torch.randn_like(feat) * 0.025  # легкий шум
         w = self.attn(feat)
         out = (feat * w).sum(dim=2)
         out = self.norm(out)
@@ -86,28 +174,36 @@ mp_drawing = mp.solutions.drawing_utils
 hands = mp_hands.Hands(
     max_num_hands=2, 
     model_complexity=0,
-    min_detection_confidence=0.3,
+    min_detection_confidence=0.5,
     static_image_mode=False,
-    min_tracking_confidence=0.3
+    min_tracking_confidence=0.25
 )
 
 # -------------------------
 # Камера
 # -------------------------
-hCam = 480
-wCam = 640
+hCam = 640
+wCam = 480
 cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print_error("Камера не подключена")
+    os._exit(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, wCam)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, hCam)
-
+CAPTURE_FPS = 30
+DISPLAY_FPS = 24 
+DISPLAY_INTERVAL = 1.0 / DISPLAY_FPS
 # -------------------------
 # Видео сохранение
 # -------------------------
 out = None
 if save_video:
+    if not os.path.exists('Output'):
+        os.makedirs('Output')
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter('Output/output.avi', fourcc, 15.0, (wCam, hCam))
-    print("[INFO] Сохранение видео включено -> output.avi")
+    if not out.isOpened():
+        print_error("Не удалось открыть файл для записи видео")
 
 # Шрифт
 try:
@@ -122,10 +218,14 @@ except:
 # -------------------------
 # Загрузка модели
 # -------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 print("Device:", device)
 
-model_path = "Resources/model_simple.pth"
+model_path = "../Training/model.pth"
+if not os.path.exists(model_path):
+    print_error("Файл ML не найден")
+    os._exit(0)
+
 state = torch.load(model_path, map_location=device, weights_only=False)
 
 labels = state['labels']
@@ -160,7 +260,6 @@ print(f"[INFO] Классы: {labels}")
 model = SimpleTCN(input_size=real_input_size, num_classes=num_classes).to(device)
 model.load_state_dict(state['model_state'])
 model.eval()
-
 # -------------------------
 # Буфер и глобальные переменные
 # -------------------------
@@ -210,7 +309,7 @@ def capture_thread():
             frame = cv2.flip(frame, 1)
             with lock:
                 latest_frame = frame.copy()
-        time.sleep(0.01)
+        time.sleep(1.0 / CAPTURE_FPS)
 
 def process_thread():
     global latest_frame, processed_frame, running
@@ -238,10 +337,10 @@ def process_thread():
             results = hands.process(rgb_frame)  # каждый второй кадр
         frame_id += 1
         if not results.multi_hand_landmarks:
-            feature_buffer.clear()
+            # feature_buffer.clear()
             gesture_name = "None"
             confidence = 0.0
-            all_probabilities = []
+            # all_probabilities = []
             cv2.putText(display_frame, "No hands detected", (50, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         else:
@@ -299,16 +398,12 @@ def process_thread():
         new_frame_ready.set()
 
 
-
-        
 def display_thread():
-    global processed_frame, running, out
+    global processed_frame, running, out, latest_web_frame, last_gesture
     frame_count = 0
     last_print = time.time()
-    
-    # Для отслеживания стабильности предсказаний
     gesture_history = deque(maxlen=10)
-
+    last_gesture = "None"
     while running:
         if not new_frame_ready.wait(timeout=1.0):
             continue
@@ -319,76 +414,75 @@ def display_thread():
                 continue
             frame, latency, gesture, confidence, probabilities = processed_frame
 
-        # Сохранение видео
+        # Сохраняем видео
         if save_video and out is not None:
             out.write(frame)
 
-        # Вывод на дисплей
-        if display_connected:
-            frame_resized = cv2.resize(frame, (xres, yres))
-            fb_map.seek(0)
-            fb_map.write(rgb565_fast(frame_resized))
-
-        # Отслеживаем историю жестов
+        # Сохраняем кадр для web
+        with web_lock:
+            latest_web_frame = frame.copy()
+        # История жестов
         if gesture != "None":
             gesture_history.append(gesture)
         
+        # Печать статистики
         frame_count += 1
         now = time.time()
-        if now - last_print >= 2.0:  # печатаем каждые 2 секунды
+        if now - last_print >= 2.0:
             fps = frame_count / (now - last_print)
             cpu_usage = psutil.cpu_percent(interval=None)
-            
-            # Анализ стабильности
-            if gesture_history:
-                most_common = max(set(gesture_history), key=gesture_history.count)
-                stability = gesture_history.count(most_common) / len(gesture_history)
-            else:
-                most_common = "None"
-                stability = 0.0
-            
+            most_common = max(set(gesture_history), key=gesture_history.count) if gesture_history else "None"
+            stability = gesture_history.count(most_common)/len(gesture_history) if gesture_history else 0.0
             print(f"[INFO] FPS: {fps:.1f}, Latency: {latency:.1f}ms, CPU: {cpu_usage:.1f}%")
             print(f"       Current: {gesture} (conf: {confidence:.2f})")
-            print(f"       History: {list(gesture_history)}")
             print(f"       Most common: {most_common} (stability: {stability:.2f})")
-            if len(probabilities) > 0:  # ИСПРАВЛЕНО: проверяем длину вместо .any()
-                prob_str = ", ".join([f"{l}:{p:.2f}" for l, p in zip(labels, probabilities)])
-                print(f"       Probabilities: {prob_str}")
-            print("-" * 50)
-            nx.set_text("t0", gesture)
             frame_count = 0
             last_print = now
+
+        # Nextion
+        if gesture != last_gesture:
+            nextion_queue.put(gesture)
+            last_gesture = gesture
+
 
 # -------------------------
 # Запуск потоков
 # -------------------------
-threads = [
-    threading.Thread(target=capture_thread, daemon=True),
-    threading.Thread(target=process_thread, daemon=True),
-    threading.Thread(target=display_thread, daemon=True)
-]
 
-for t in threads:
-    t.start()
+if not isTestRun:
+    threads = [
+        threading.Thread(target=capture_thread, daemon=True),
+        threading.Thread(target=process_thread, daemon=True),
+        threading.Thread(target=display_thread, daemon=True),
+        threading.Thread(target=start_flask, daemon=True)
+    ]
 
-print("[INFO] Все потоки запущены. Нажмите Ctrl+C для остановки.")
-
-try:
-    while True:
-        time.sleep(0.1)
-except KeyboardInterrupt:
-    print("\n[INFO] Остановка...")
-    running = False
     for t in threads:
-        t.join()
-finally:
-    if display_connected:
-        fb_map.close()
-        fb.close()
-    if save_video and out is not None:
-        out.release()
-        print("[INFO] Видеофайл сохранён: output.avi")
-    cap.release()
-    hands.close()
-    nx.close()
-    print("[INFO] Завершено корректно.")
+        t.start()
+
+    print("[INFO] Все потоки запущены. Нажмите Ctrl+C для остановки.")
+    try:
+        last_nx_msg = None
+        while running:
+            try:
+                msg = nextion_queue.get_nowait()
+            except:
+                msg = None
+    
+            if msg and msg != "None" and msg != last_nx_msg:  # ИГНОРИРУЕМ "None"
+                nx.set_text("t2", msg)
+                last_nx_msg = msg
+                print(f"[NX] Отправлено: {msg}")
+                time.sleep(1)
+    
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\n[INFO] Остановка...")
+        running = False
+    finally:
+        if save_video and out is not None:
+            out.release()
+            print("[INFO] Видеофайл сохранён: output.avi")
+        cap.release()
+        hands.close()
+        print("[INFO] Завершено корректно.")

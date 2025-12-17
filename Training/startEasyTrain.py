@@ -28,7 +28,6 @@ class GestureDataset(Dataset):
         data_dir,
         train=True,
         augment=False,
-        cache_dir=None,
         max_len=None,
         frame_dropout=0.1,
         noise_std=0.02,
@@ -40,126 +39,103 @@ class GestureDataset(Dataset):
         self.annotations = self.annotations[
             self.annotations["train"] == train
         ].reset_index(drop=True)
-        self.data_dir, self.augment, self.cache_dir, self.max_len = (
-            data_dir,
-            augment,
-            cache_dir,
-            max_len,
-        )
-        self.frame_dropout, self.noise_std, self.scale_jitter = (
-            frame_dropout,
-            noise_std,
-            scale_jitter,
-        )
+
+        self.data_dir = data_dir
+        self.augment = augment
+        self.max_len = max_len
+
+        self.frame_dropout = frame_dropout
+        self.noise_std = noise_std
+        self.scale_jitter = scale_jitter
+
         self.labels = sorted(self.annotations["text"].unique())
         self.label2idx = {c: i for i, c in enumerate(self.labels)}
-        if cache_dir:
-            ensure_dir(cache_dir)
 
     def __len__(self):
         return len(self.annotations)
 
-    def _cache_path(self, attachment_id):
-        return (
-            os.path.join(self.cache_dir, f"{attachment_id}.npy")
-            if self.cache_dir
-            else None
-        )
-    def _load_tensor(self, attachment_id, csv_path=None):
+    def _load_tensor(self, csv_path):
         npz_path = os.path.splitext(csv_path)[0] + ".npz"
-        data = np.load(npz_path)["data"].astype(np.float32)  # [T, 126]
-
-        T, N = data.shape
-        assert N == 126, f"Unexpected feature count: {N}, expected 126 for two hands"
-
-        X = torch.from_numpy(data)
-        J = X.view(T, 42, 3).clone()
-
-        # split
-        J_left = J[:, :21, :]
-        J_right = J[:, 21:, :]
-
-        # left norm
-        wrist_left = J_left[:, 0:1, :]
-        J_left_c = J_left - wrist_left
-        palm_vec_left = J_left_c[:, 9, :]
-        palm_size_left = torch.norm(palm_vec_left, dim=1, keepdim=True) + 1e-6
-        J_left_c = J_left_c / palm_size_left.view(T, 1, 1)
-
-        # right norm
-        wrist_right = J_right[:, 0:1, :]
-        J_right_c = J_right - wrist_right
-        palm_vec_right = J_right_c[:, 9, :]
-        palm_size_right = torch.norm(palm_vec_right, dim=1, keepdim=True) + 1e-6
-        J_right_c = J_right_c / palm_size_right.view(T, 1, 1)
-
-        # merge
-        J_norm = torch.cat([J_left_c, J_right_c], dim=1)
-        feats = J_norm.view(T, -1)
-
-        # standardize per-hand separately
-        left = feats[:, :63]
-        right = feats[:, 63:]
-
-        left = (left - left.mean(0, keepdim=True)) / (left.std(0, keepdim=True) + 1e-6)
-        right = (right - right.mean(0, keepdim=True)) / (right.std(0, keepdim=True) + 1e-6)
-
-        feats = torch.cat([left, right], dim=1)
-
-        return feats
-
-    
-
+        data = np.load(npz_path)["data"].astype(np.float32)  # (T,126)
+        return torch.from_numpy(data).view(-1, 42, 3)
 
     def __getitem__(self, idx):
         row = self.annotations.iloc[idx]
+        label = torch.tensor(
+            self.label2idx[row["text"]], dtype=torch.long
+        )
+
         csv_path = os.path.join(
             self.data_dir,
             "train" if row["train"] else "test",
             f"{row['attachment_id']}.csv",
         )
-        X = self._load_tensor(row["attachment_id"], csv_path)
-        seq_len = X.shape[0]
-        if self.max_len is not None:
-            if seq_len > self.max_len:
-                X = X[: self.max_len]
-            elif seq_len < self.max_len:
-                X = torch.cat(
-                    [X, torch.zeros(self.max_len - seq_len, X.size(1))], dim=0
-                )
-        # ---------------- Data augmentation ----------------
+
+        # ------ Load raw joints ------
+        X = self._load_tensor(csv_path)  # (T,42,3)
+        T = X.shape[0]
+
+        # ------ Data augmentation (ONLY coords) ------
         if self.augment:
-            # 1️⃣ Случайное удаление кадров (имитация пропущенных данных)
-            if torch.rand(1).item() < 0.3 and X.size(0) > 5:
-                drop_idx = torch.randperm(X.size(0))[: int(X.size(0) * self.frame_dropout)]
+            if torch.rand(1) < 0.3:
+                drop_idx = torch.randperm(T)[: int(T * self.frame_dropout)]
                 X[drop_idx] = 0
 
-            # 2️⃣ Случайный шум
-            if torch.rand(1).item() < 0.5:
-                noise = torch.randn_like(X) * self.noise_std
-                X = X + noise
+            if torch.rand(1) < 0.5:
+                X = X + torch.randn_like(X) * self.noise_std
 
-            # 3️⃣ Случайное масштабирование амплитуды
-            if torch.rand(1).item() < 0.5:
+            if torch.rand(1) < 0.5:
                 scale = 1.0 + torch.randn(1).item() * self.scale_jitter
                 X = X * scale
 
-            # 4️⃣ Случайный сдвиг по времени (перестановка начала/конца)
-            if torch.rand(1).item() < 0.3:
-                shift = torch.randint(0, X.size(0), (1,)).item()
+            if torch.rand(1) < 0.3:
+                shift = torch.randint(0, T, (1,)).item()
                 X = torch.roll(X, shifts=shift, dims=0)
 
-            # 5️⃣ Случайное обрезание и паддинг обратно до нужной длины
-            if torch.rand(1).item() < 0.3 and X.size(0) > 10:
-                cut = torch.randint(1, X.size(0)//4, (1,)).item()
-                X = X[cut:]
-                pad_len = self.max_len - X.size(0)
-                if pad_len > 0:
-                    X = torch.cat([X, torch.zeros(pad_len, X.size(1))], dim=0)
-                else:
-                    X = X[:self.max_len]
+        # ------ Feature engineering ------
+        J_left = X[:, :21]
+        J_right = X[:, 21:]
 
-        return X, torch.tensor(self.label2idx[row["text"]], dtype=torch.long)
+        def norm_hand(J):
+            wrist = J[:, 0:1]
+            Jc = J - wrist
+            palm = Jc[:, 9]
+            scale = torch.norm(palm, dim=1, keepdim=True) + 1e-6
+            return Jc / scale.view(-1, 1, 1)
+
+        J_left = norm_hand(J_left)
+        J_right = norm_hand(J_right)
+
+        coords = torch.cat([J_left, J_right], dim=1).view(T, -1)
+
+        velocity = torch.zeros_like(coords)
+        velocity[1:] = coords[1:] - coords[:-1]
+
+        motion_energy = torch.norm(velocity, dim=1, keepdim=True)
+        motion_energy = (motion_energy - motion_energy.mean()) / (
+            motion_energy.std() + 1e-6
+        )
+
+        left_present = (J_left.abs().sum(dim=(1, 2)) > 0).float()
+        right_present = (J_right.abs().sum(dim=(1, 2)) > 0).float()
+        hands_count = ((left_present + right_present) / 2.0).unsqueeze(1)
+
+        feats = torch.cat(
+            [hands_count, coords, velocity, motion_energy], dim=1
+        )
+
+        # ------ Padding / Truncation (FINAL STEP) ------
+        if self.max_len is not None:
+            if feats.size(0) > self.max_len:
+                feats = feats[: self.max_len]
+            else:
+                pad = torch.zeros(
+                    self.max_len - feats.size(0), feats.size(1)
+                )
+                feats = torch.cat([feats, pad], dim=0)
+
+        return feats, label
+
 
 
 def collate_fn(batch):
@@ -174,14 +150,12 @@ class SimpleTCN(nn.Module):
     def __init__(self, input_size, num_classes):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv1d(input_size, 64, 3, padding=1),
-            nn.BatchNorm1d(64),
+            nn.Conv1d(input_size, 128, 5, padding=2, dilation=1),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Conv1d(64, 128, 3, padding=1),
-            nn.BatchNorm1d(128),
+            nn.Conv1d(128, 128, 5, padding=4, dilation=2),
             nn.ReLU(),
-            nn.Dropout(0.3)
+            nn.Conv1d(128, 128, 5, padding=8, dilation=4),
+            nn.ReLU()
         )
         self.attn = nn.Sequential(
             nn.Conv1d(128, 1, 1),
@@ -242,10 +216,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-ds", "--dataSet", default="Datasets/CreatedDS/")
     parser.add_argument("-e", "--epochs", type=int, default=500)
-    parser.add_argument("-bs", "--batchSize", type=int, default=64)
-    parser.add_argument("-o", "--out", type=str, default="model_simple.pth")
+    parser.add_argument("-bs", "--batchSize", type=int, default=128)
+    parser.add_argument("-o", "--out", type=str, default="model.pth")
     parser.add_argument("--max_len", type=int, default=14)
-    parser.add_argument("--early_stop", type=int, default=20)
+    parser.add_argument("--early_stop", type=int, default=40)
     args = parser.parse_args()
 
     annotations_path = os.path.join(args.dataSet, "annotations.csv")
