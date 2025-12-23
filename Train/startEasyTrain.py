@@ -3,10 +3,11 @@ from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from torch.nn.utils.rnn import pad_sequence
 from torch_optimizer import RAdam, Lookahead
 from tqdm import tqdm
+from pathlib import Path
 
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
-
+os.chdir(Path(__file__).resolve().parent)
 
 def ensure_dir(d):
     if not os.path.exists(d):
@@ -217,7 +218,7 @@ def main():
     parser.add_argument("-ds", "--dataSet", default="Datasets/CreatedDS/")
     parser.add_argument("-e", "--epochs", type=int, default=500)
     parser.add_argument("-bs", "--batchSize", type=int, default=128)
-    parser.add_argument("-o", "--out", type=str, default="model.pth")
+    parser.add_argument("-o", "--out", type=str, default="Models/model.pth")
     parser.add_argument("--max_len", type=int, default=14)
     parser.add_argument("--early_stop", type=int, default=40)
     args = parser.parse_args()

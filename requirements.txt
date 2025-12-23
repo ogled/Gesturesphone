@@ -1,0 +1,12 @@
+numpy
+psutil
+Pillow
+mediapipe==0.10.9
+torch
+opencv-python-headless
+fastapi
+pyserial
+pandas
+torch_optimizer
+tqdm
+uvicorn
