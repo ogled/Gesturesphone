@@ -278,20 +278,25 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
 
 /* ===== Camera ===== */
 .main {
-  max-width: 95%;
-  max-height: 95%;
+  width: 100%;
+  height: 0;
+  padding-top: 75%;
+  position: relative;
   background: black;
+  border-radius: 6px;
+  overflow: hidden;
   display: flex;
   justify-content: center;
   align-items: center;
-  overflow: hidden;
-  border-radius: 6px;
 }
 
 .camera-feed {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
-  max-width: 95%;
-  max-height: 95%;
 }
 
 /* ===== Gestures ===== */

@@ -79,7 +79,7 @@ class SimpleTCN(nn.Module):
     def forward(self, x):
         x = x.permute(0, 2, 1)
         feat = self.conv(x)
-        feat = feat + torch.randn_like(feat) * 0.025  # легкий шум
+        feat = feat + torch.randn_like(feat) * 0.025  # шум
         w = self.attn(feat)
         out = (feat * w).sum(dim=2)
         out = self.norm(out)
@@ -91,11 +91,8 @@ def create_feature_vector(multi_hand_landmarks, multi_handedness):
 
     if multi_hand_landmarks and multi_handedness:
         for hand_landmarks, handedness in zip(multi_hand_landmarks, multi_handedness):
-            label = handedness.classification[0].label  # "Left" или "Right"
+            label = handedness.classification[0].label
             idx = 0 if label == "Left" else 1
-            coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark], dtype=np.float32)
-            
-            wrist = coords[0:1, :]
             coords_centered = coords - wrist
             palm_vec = coords_centered[9, :]
             palm_size = np.linalg.norm(palm_vec) + 1e-6
@@ -124,10 +121,9 @@ def process_thread():
     confidence = 0.0
     all_probabilities = []
 
-    # параметры
     dims = 3
     num_landmarks = 21
-    expected_raw_features = num_landmarks * dims * 2  # 126 признаков для двух рук
+    expected_raw_features = num_landmarks * dims * 2
     frame_id = 0
     while not stopThreads:
         with lock:
@@ -141,21 +137,19 @@ def process_thread():
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if frame_id % 2 == 0:
-            results = hands.process(rgb_frame)  # каждый второй кадр
+            results = hands.process(rgb_frame) 
         frame_id += 1
         if not results.multi_hand_landmarks:
             # feature_buffer.clear()
             gesture_name = "None"
             confidence = 0.0
         else:
-            # создаём вектор признаков обеих рук (126)
             features = create_feature_vector(
                 results.multi_hand_landmarks,
                 results.multi_handedness
             )
             feature_buffer.append(features.squeeze(0).cpu().numpy())
 
-            # отрисовка только первой руки
             for hand in results.multi_hand_landmarks:
                 mp_drawing.draw_landmarks(
                     display_frame,
@@ -202,7 +196,7 @@ def display_thread():
             frame, latency, gesture, confidence, probabilities = processed_frame
             if probabilities is not None and len(probabilities) == len(labels):
                 latest_gesture_probs = {
-                    "ts": int(time.time() * 1000),  # миллисекунды
+                    "ts": int(time.time() * 1000),
                     "probs": {
                         labels[i].capitalize(): round(float(round(probabilities[i], 4)) * 100)
                         for i in range(len(labels))

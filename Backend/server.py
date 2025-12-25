@@ -4,15 +4,9 @@ from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 import psutil
 import json
 import cv2
-import os
 import time
-import atexit
-import signal
-import sys
 import PiCam
 
-GESTURES_FILE = "gestures.json"
-camera = cv2.VideoCapture(0)
 app = FastAPI()
 
 clients = set()
@@ -44,9 +38,6 @@ def gen_frames():
             buffer.tobytes() +
             b"\r\n"
         )
-
-
-PiCam.initialization()
 
 @app.get("/api/gestures")
 def gestures_feed():
@@ -99,16 +90,4 @@ async def ws(ws: WebSocket):
     except:
         clients.remove(ws)
 
-def cleanup_on_exit(signum, frame):
-    if os.path.exists(GESTURES_FILE):
-        os.remove(GESTURES_FILE)
-    if PiCam.cap and PiCam.cap.isOpened():
-        PiCam.cap.release()
-    if PiCam.out:
-        PiCam.out.release()
-    if PiCam.hands:
-        PiCam.hands.close()
-    sys.exit(0)
-
-#signal.signal(signal.SIGINT, cleanup_on_exit)
-#signal.signal(signal.SIGTERM, cleanup_on_exit)
+PiCam.initialization()
