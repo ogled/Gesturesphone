@@ -1,11 +1,14 @@
 import os
 import csv
 import shutil
-
+from pathlib import Path
 # ПУТИ
-DATASET_PATH = r"Datasets/SlovoDS"
-ALLOWED_GESTURES_CSV = r"Datasets/AllowedGestures.csv"
-OUTPUT_FOLDER = r"Datasets/HowToSpeak"
+
+os.chdir(Path(__file__).resolve().parent)
+
+DATASET_PATH = r"SlovoDS"
+ALLOWED_GESTURES_CSV = r"AllowedGestures.csv"
+OUTPUT_FOLDER = r"HowToSpeak"
 
 ANNOTATIONS_PATH = os.path.join(DATASET_PATH, "annotations.csv")
 TRAIN_FOLDER = os.path.join(DATASET_PATH, "train")
@@ -56,7 +59,7 @@ for gesture, attachment_id in gesture_first_video.items():
         found_path = path_test
 
     if found_path:
-        out_path = os.path.join(OUTPUT_FOLDER, f"{gesture}.mp4")
+        out_path = os.path.join(OUTPUT_FOLDER, f"{gesture}.mp4").replace("?", "")
         shutil.copy(found_path, out_path)
         print(f"✔ {gesture}: сохранено {out_path}")
     else:

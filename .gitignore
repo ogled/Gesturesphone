@@ -5,6 +5,7 @@ dist
 cache_npy
 Train/Datasets/CreatedDS/
 Train/Datasets/SlovoDS/
+Train/Datasets/HowToSpeak/
 Train/Models
 Train/Statistics
 Train/train_log.csv

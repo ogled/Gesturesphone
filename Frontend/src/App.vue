@@ -175,7 +175,7 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
                 </div>
 
                 <p v-if="gestures.length > 10" class="more-gestures">
-                  Здесь остались ещё {{ gestures.length - 10 }} жестов
+                  Здесь остальные {{ gestures.length - 10 }} жестов
                 </p>
               </div>
             </div>

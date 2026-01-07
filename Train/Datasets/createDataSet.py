@@ -1,177 +1,165 @@
 import argparse
-import mediapipe as mp
-import cv2
-import tqdm
 import os
 import csv
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import numpy as np
-import csv
-import os
 import cv2
 import mediapipe as mp
+import numpy as np
+import torch
+import tqdm
 
-def processVideo(video_path, output_csv, target_fps=None, round_decimals=5):
+os.chdir(Path(__file__).resolve().parent)
+
+# ======================================================
+# Video → Torch Tensor [T, 2, 21, 3]
+# ======================================================
+
+def process_video(video_path: str, output_pt: str, target_fps: int):
     try:
-        if os.path.exists(output_csv):
-            os.remove(output_csv)
-
         mp_hands = mp.solutions.hands
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return f"❌ Не удалось открыть {video_path}"
+
+        original_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        frame_step = max(1, int(original_fps // target_fps))
+
         with mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
+            model_complexity=0,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.25,
-            model_complexity=0
         ) as hands:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                return f"Ошибка открытия: {video_path}"
 
-            original_fps = cap.get(cv2.CAP_PROP_FPS) or 30
-            frame_step = max(1, round(original_fps / target_fps)) if target_fps and target_fps < original_fps else 1
-
-            landmarks_data = []
-            frame_count = 0
+            frames = []
+            frame_idx = 0
 
             while True:
-                success, frame = cap.read()
-                if not success:
+                ret, frame = cap.read()
+                if not ret:
                     break
 
-                if frame_count % frame_step != 0:
-                    frame_count += 1
+                if frame_idx % frame_step != 0:
+                    frame_idx += 1
                     continue
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = hands.process(frame_rgb)
+                result = hands.process(frame_rgb)
 
-                hands_dict = {"Left": [0.0] * (21 * 3), "Right": [0.0] * (21 * 3)}
+                # [2, 21, 3] — Left, Right
+                frame_data = np.zeros((2, 21, 3), dtype=np.float32)
 
-                if results.multi_hand_landmarks and results.multi_handedness:
-                    for hand_landmarks, hand_handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                        label = hand_handedness.classification[0].label
-                        coords = []
-                        for lm in hand_landmarks.landmark:
-                            coords.extend([round(lm.x, round_decimals),
-                                           round(lm.y, round_decimals),
-                                           round(lm.z, round_decimals)])
-                        hands_dict[label] = coords
+                if result.multi_hand_landmarks and result.multi_handedness:
+                    for lm, handedness in zip(
+                        result.multi_hand_landmarks,
+                        result.multi_handedness
+                    ):
+                        hand_id = 0 if handedness.classification[0].label == "Left" else 1
+                        for i, p in enumerate(lm.landmark):
+                            frame_data[hand_id, i] = (p.x, p.y, p.z)
 
-                frame_landmarks = hands_dict["Left"] + hands_dict["Right"]
-                landmarks_data.append([frame_count] + frame_landmarks)
-                frame_count += 1
+                frames.append(frame_data)
+                frame_idx += 1
 
-            cap.release()
-            del cap
-            cv2.destroyAllWindows()
+        cap.release()
 
-            os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-            with open(output_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                header = ["frame"]
-                for hand in range(1, 3):
-                    for i in range(21):
-                        header.extend([f"x{i}_{hand}", f"y{i}_{hand}"])
-                writer.writerow(header)
-                csv_rows = []
-                for row in landmarks_data:
-                    csv_row = [row[0]]
-                    coords = row[1:]
-                    csv_row.extend([round(coords[i], round_decimals) for i in range(len(coords)) if i % 3 != 2])
-                    csv_rows.append(csv_row)
-                writer.writerows(csv_rows)
+        if not frames:
+            return f"⚠️ Пустое видео: {video_path}"
 
-            npz_path = os.path.splitext(output_csv)[0] + ".npz"
-            np_data = np.array(landmarks_data, dtype=np.float32)
-            np_data = np_data[:, 1:]
-            np_data = np_data[:, :126] 
-            np.savez_compressed(npz_path, data=np_data)
+        data = np.stack(frames) 
+        tensor = torch.from_numpy(data)
 
-            return f"Готово: {output_csv} / {npz_path}"
+        os.makedirs(os.path.dirname(output_pt), exist_ok=True)
+        torch.save(tensor, output_pt)
+
+        return f"✅ {os.path.basename(video_path)} → {tensor.shape}"
 
     except Exception as e:
-        return f"Ошибка обработки {os.path.basename(video_path)}: {e}"
+        return f"❌ Ошибка {os.path.basename(video_path)}: {e}"
 
+
+# ======================================================
+# MAIN
+# ======================================================
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-ds', '--input', default=r"Datasets\\SlovoDS", help='Путь к датасету SlovoDS')
-    parser.add_argument('-o', '--output', default="Datasets\\CreatedDS", help='Папка для сохранения обработанных данных')
-    parser.add_argument('-ag', '--allowedGestures', default="Datasets\\AllowedGestures.csv", help='CSV с разрешёнными жестами')
-    parser.add_argument('--fps', type=int, default=6) 
+    parser.add_argument("-ds", "--input", default="SlovoDS")
+    parser.add_argument("-o", "--output", default="CreatedDS")
+    parser.add_argument("-ag", "--allowedGestures", default="AllowedGestures.csv")
+    parser.add_argument("--fps", type=int, default=6)
     args = parser.parse_args()
-    
-    dataset_path = args.input.strip('"\'')
-    output_folder = args.output.strip('"\'')
-    annotations_path = os.path.join(dataset_path, "annotations.csv")
-    allowed_gestures_path = args.allowedGestures.strip('"\'')
-    new_annotations_path = os.path.join(output_folder, "annotations.csv")
 
-    os.makedirs(output_folder, exist_ok=True)
+    dataset_path = args.input
+    output_path = args.output
 
-    allowed_gestures = set()
-    with open(allowed_gestures_path, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+    os.makedirs(output_path, exist_ok=True)
+
+    # --------------------------------------------------
+    # Allowed gestures
+    # --------------------------------------------------
+    allowed = set()
+    with open(args.allowedGestures, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            allowed.add(row["text"].strip())
+
+    # --------------------------------------------------
+    # Filter annotations
+    # --------------------------------------------------
+    annotations = []
+    with open(os.path.join(dataset_path, "annotations.csv"), encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
-            gesture = row["text"].strip()
-            allowed_gestures.add(gesture)
-    print(f"Разрешённые жесты: {allowed_gestures}")
+            if row["text"].strip() in allowed:
+                annotations.append(row)
 
-    allowed_annotations = []
-    with open(annotations_path, encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter='\t')
-        for row in reader:
-            gesture = row["text"].strip()
-            if gesture in allowed_gestures:
-                allowed_annotations.append(row)
-
-    if allowed_annotations:
-        with open(new_annotations_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=allowed_annotations[0].keys(), delimiter='\t')
-            writer.writeheader()
-            writer.writerows(allowed_annotations)
-        print(f"Создан новый annotations.csv с {len(allowed_annotations)} строками.")
-    else:
-        print("Нет допустимых аннотаций. Новый файл не создан.")
+    if not annotations:
+        print("Нет допустимых жестов")
         return
 
-    allowed_ids = {row["attachment_id"] for row in allowed_annotations}
+    with open(os.path.join(output_path, "annotations.csv"), "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=annotations[0].keys(), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(annotations)
 
-    video_paths = []
-    for split in ["train", "test"]:
-        folder = os.path.join(dataset_path, split)
-        if not os.path.exists(folder):
+    allowed_ids = {a["attachment_id"] for a in annotations}
+
+    # --------------------------------------------------
+    # Collect videos
+    # --------------------------------------------------
+    jobs = []
+    for split in ("train", "test"):
+        src = os.path.join(dataset_path, split)
+        if not os.path.exists(src):
             continue
-        for f in os.listdir(folder):
+
+        for f in os.listdir(src):
             if f.endswith(".mp4"):
-                attachment_id = os.path.splitext(f)[0]
-                if attachment_id in allowed_ids:
-                    video_path = os.path.join(folder, f)
-                    output_csv = os.path.join(output_folder, split, f"{attachment_id}.csv")
-                    video_paths.append((video_path, output_csv))
+                vid = os.path.splitext(f)[0]
+                if vid in allowed_ids:
+                    jobs.append((
+                        os.path.join(src, f),
+                        os.path.join(output_path, split, f"{vid}.pt")
+                    ))
 
-    print(f"Видео для обработки: {len(video_paths)}")
+    print(f"Видео к обработке: {len(jobs)}")
 
-    for root, _, files in os.walk(output_folder):
-        for f in files:
-            if f.endswith(".csv") and f != "annotations.csv":
-                attachment_id = os.path.splitext(f)[0]
-                if attachment_id not in allowed_ids:
-                    os.remove(os.path.join(root, f))
-                    print(f"Удалён неразрешённый файл: {f}")
-
-    with tqdm.tqdm(total=len(video_paths), desc="Обработка видео") as pbar:
-        with ProcessPoolExecutor(max_workers=os.cpu_count() - 1) as executor:
-            futures = {executor.submit(processVideo, v, o, args.fps): v for v, o in video_paths}
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    result = f"Ошибка в пуле: {e}"
-                pbar.update(1)
-                tqdm.tqdm.write(result)
+    # --------------------------------------------------
+    # Parallel processing
+    # --------------------------------------------------
+    with tqdm.tqdm(total=len(jobs), desc="Обработка") as bar:
+        with ProcessPoolExecutor(max_workers=os.cpu_count() - 1) as pool:
+            futures = [
+                pool.submit(process_video, v, o, args.fps)
+                for v, o in jobs
+            ]
+            for f in as_completed(futures):
+                bar.update(1)
+                tqdm.tqdm.write(f.result())
 
 
 if __name__ == "__main__":
