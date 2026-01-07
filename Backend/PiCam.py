@@ -55,55 +55,101 @@ def print_error(str):
     print(f"\033[31m[ERROR] {str}\033[0m")
     time.sleep(2)
 
-class SimpleTCN(nn.Module):
-    def __init__(self, input_size, num_classes):
+class ArcMarginProduct(nn.Module):
+    def __init__(self, in_features, out_features, s=34.0, m=0.37):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv1d(input_size, 64, 3, padding=1),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Conv1d(64, 128, 3, padding=1),
-            nn.BatchNorm1d(128),
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        self.s = s
+        self.m = m
+
+    def forward(self, x, label=None):
+        cosine = torch.nn.functional.linear(
+            torch.nn.functional.normalize(x),
+            torch.nn.functional.normalize(self.weight)
+        )
+        if label is None:
+            return cosine * self.s
+        theta = torch.acos(torch.clamp(cosine, -1 + 1e-6, 1 - 1e-6))
+        target = torch.cos(theta + self.m)
+        one_hot = torch.zeros_like(cosine)
+        one_hot.scatter_(1, label.view(-1, 1), 1.0)
+        logits = cosine * (1 - one_hot) + target * one_hot
+        return logits * self.s
+
+
+class SimpleTCN(nn.Module):
+    def __init__(self, input_size, num_classes, emb_dim=256):
+        super().__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(input_size, 256, 5, padding=2),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.3)
         )
-        self.attn = nn.Sequential(
-            nn.Conv1d(128, 1, 1),
-            nn.Softmax(dim=2)
+        self.conv2 = nn.Sequential(
+            nn.Conv1d(256, 512, 5, padding=4, dilation=2),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.3)
         )
-        self.norm = nn.LayerNorm(128)
-        self.fc = nn.Linear(128, num_classes)
-        self.dropout = nn.Dropout(p=0.5)
+        self.conv3 = nn.Sequential(
+            nn.Conv1d(512, emb_dim, 5, padding=8, dilation=4),
+            nn.BatchNorm1d(emb_dim),
+            nn.ReLU(),
+            nn.Dropout(0.3)
+        )
+        self.arcface = ArcMarginProduct(emb_dim, num_classes)
 
-    def forward(self, x):
+    def forward(self, x, lengths=None, labels=None, return_embedding=False):
         x = x.permute(0, 2, 1)
-        feat = self.conv(x)
-        feat = feat + torch.randn_like(feat) * 0.025  # шум
-        w = self.attn(feat)
-        out = (feat * w).sum(dim=2)
-        out = self.norm(out)
-        out = self.dropout(out)
-        return self.fc(out)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = x.permute(0, 2, 1)
+
+        if lengths is not None:
+            mask = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
+            x = (x * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
+        else:
+            x = x.mean(1)
+
+        if return_embedding:
+            return x
+
+        return self.arcface(x, labels)
 
 def create_feature_vector(multi_hand_landmarks, multi_handedness):
-    hands_feats = np.zeros((2, 21, 3), dtype=np.float32)
+    hands = np.zeros((2, 21, 3), dtype=np.float32)
 
     if multi_hand_landmarks and multi_handedness:
-        for hand_landmarks, handedness in zip(multi_hand_landmarks, multi_handedness):
-            label = handedness.classification[0].label
-            idx = 0 if label == "Left" else 1
-            coords_centered = coords - wrist
-            palm_vec = coords_centered[9, :]
-            palm_size = np.linalg.norm(palm_vec) + 1e-6
-            coords_normalized = coords_centered / palm_size
-            
-            hands_feats[idx] = coords_normalized
-    feats = hands_feats.reshape(1, -1)  # [1, 126]
+        for lm, hd in zip(multi_hand_landmarks, multi_handedness):
+            idx = 0 if hd.classification[0].label == "Left" else 1
+            coords = np.array([[p.x, p.y, p.z] for p in lm.landmark], dtype=np.float32)
+            wrist = coords[0:1]
+            coords = coords - wrist
+            palm = coords[9]
+            scale = np.linalg.norm(palm) + 1e-6
+            hands[idx] = coords / scale
 
-    feats = (feats - feats.mean(1, keepdims=True)) / (feats.std(1, keepdims=True) + 1e-6)
+    left, right = hands[0], hands[1]
+    coords = np.concatenate([left, right], axis=0).reshape(1, -1)  # 126
+
+    velocity = np.zeros_like(coords)
+    motion_energy = np.zeros((1, 1), dtype=np.float32)
+
+    hands_present = (
+        (np.abs(left).sum() > 0) + (np.abs(right).sum() > 0)
+    ) / 2.0
+    hands_count = np.array([[hands_present]], dtype=np.float32)
+
+    feats = np.concatenate(
+        [hands_count, coords, velocity, motion_energy],
+        axis=1
+    )  # 254
 
     return torch.tensor(feats, dtype=torch.float32)
+
 
 def capture_thread():
     global latest_frame
@@ -166,13 +212,23 @@ def process_thread():
                 sequence_tensor = torch.tensor(seq_feats, dtype=torch.float32).unsqueeze(0).to(device)  # [1, seq_len, 126]
 
                 with torch.no_grad():
-                    preds = model(sequence_tensor)
-                    probs = torch.softmax(preds, dim=1)
-                    confidence, label_id = torch.max(probs, dim=1)
-                    confidence = confidence.item()
-                    label_id = label_id.item()
-                    all_probabilities = probs.cpu().numpy()[0]
-                    gesture_name = labels[label_id] if confidence > CONF_THRESHOLD else "None"
+                    emb = model(sequence_tensor, return_embedding=True)
+                    logits = model.arcface(emb)
+                    probs = torch.softmax(logits, dim=1)
+
+                    probs_np = probs.cpu().numpy()[0]
+                    best_idx = int(np.argmax(probs_np))
+                    best_conf = float(probs_np[best_idx])
+
+                    if best_conf >= CONF_THRESHOLD:
+                        gesture_name = labels[best_idx]
+                        confidence = best_conf
+                    else:
+                        gesture_name = "None"
+                        confidence = best_conf
+
+                    all_probabilities = probs_np.tolist()
+
 
         # --- отрисовка ---
         latency = (time.time() - start_time) * 1000
@@ -252,7 +308,7 @@ def initialization():
         if not out.isOpened():
             print_error("Не удалось открыть файл для записи видео")
 
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
     model_path = "../Train/model.pth"
@@ -260,37 +316,17 @@ def initialization():
         print_error("Файл ML не найден")
         os._exit(0)
 
-    state = torch.load(model_path, map_location=device, weights_only=False)
+    state = torch.load(model_path, map_location=device)
 
-    labels = state['labels']
-    num_classes = len(labels)
-
-    print("=== АНАЛИЗ СТРУКТУРЫ МОДЕЛИ ===")
-    real_input_size = None
-    for key in state['model_state'].keys():
-        if 'tcn.0.weight' in key or 'tcn.0.conv.weight' in key:
-            real_input_size = state['model_state'][key].shape[1]
-            print(f"Найден ключ: {key}, shape: {state['model_state'][key].shape}")
-            print(f"РЕАЛЬНЫЙ INPUT_SIZE: {real_input_size}")
-            break
-
-    if real_input_size is None:
-        for key, weight in state['model_state'].items():
-            if 'weight' in key and len(weight.shape) == 3:
-                real_input_size = weight.shape[1]
-                print(f"Альтернативный поиск: {key}, shape: {weight.shape}")
-                print(f"РЕАЛЬНЫЙ INPUT_SIZE: {real_input_size}")
-                break
-
-    if real_input_size is None:
-        real_input_size = 126
-        print(f"[WARN] Не удалось определить input_size, используем {real_input_size}")
-
-    print(f"[INFO] Используется input_size: {real_input_size}")
-    print(f"[INFO] Классы: {labels}")
-
-    model = SimpleTCN(input_size=real_input_size, num_classes=num_classes).to(device)
-    model.load_state_dict(state['model_state'])
+    labels = state["labels"]
+    num_classes = state["num_classes"]
+    real_input_size = state["input_size"]
+    
+    print(f"[INFO] input_size: {real_input_size}")
+    print(f"[INFO] classes: {labels}")
+    
+    model = SimpleTCN(real_input_size, num_classes).to(device)
+    model.load_state_dict(state["model_state_dict"])
     model.eval()
 
     feature_buffer = deque(maxlen=sequence_length)
