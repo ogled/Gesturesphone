@@ -55,7 +55,7 @@ def camera_feed():
 @app.get("/api/getUsageVals")
 def cpu_usage_val():
     return JSONResponse(
-        content={"CPU": str(round(psutil.cpu_percent(interval=0))), "RAM": str(round(psutil.virtual_memory().percent))}
+        content={"CPU": str(round(psutil.cpu_percent(interval=0))), "RAM": str(round(psutil.virtual_memory().percent)), "FPS": str(round(PiCam.fps))}
     )
 
 @app.get("/api/start")

@@ -21,6 +21,7 @@ fetch(`https://api.github.com/repos/ogled/Gesturesphone/commits?per_page=1`).the
   });
 const cpuLoad = ref(0)
 const ramLoad = ref(0)
+const fps = ref(0)
 /* ===== Gestures ===== */
 const gestures = ref([])
 const isGesturesLoading = ref(false)
@@ -89,6 +90,7 @@ async function loadUsageVals() {
   const data = await res.json()
   cpuLoad.value = data.CPU
   ramLoad.value = data.RAM
+  fps.value = data.FPS
   
 }
 watch(displayMode, (v) => localStorage.setItem('displayMode', v))
@@ -213,6 +215,7 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
       <div class="right-aligned">
         <span class="cpu">CPU: <b>{{ cpuLoad }}%</b></span>
         <span class="ram">RAM: <b>{{ ramLoad }}%</b></span>
+        <span class="fps">FPS: <b>{{ fps }}</b></span>
       </div>
     </footer>
   </div>
@@ -404,7 +407,7 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
   color: #6b7280;
 }
 
-.cpu, .ram {
+.cpu, .ram, .fps {
   display: inline-flex;
   align-items: center;
   margin-right: 8px;
@@ -412,8 +415,16 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
 
 .cpu b, .ram b {
   min-width: 4ch;
+  max-width: 4ch;
   text-align: right;
-  padding-left: 4px;
+  padding-left: 2px;
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+}
+.fps b {
+  min-width: 3ch;
+  max-width: 3ch;
+  text-align: right;
   display: inline-block;
   font-variant-numeric: tabular-nums;
 }
@@ -421,6 +432,7 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
 .right-aligned {
   display: flex;
   align-items: center;
+  
 }
 .StartingProgramm {
   height: 100%;

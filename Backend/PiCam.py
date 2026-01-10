@@ -33,6 +33,7 @@ hands = None
 CAPTURE_FPS = 30
 DISPLAY_FPS = 24 
 DISPLAY_INTERVAL = 1.0 / DISPLAY_FPS
+fps = 0
 
 stopThreads = False
 out = None
@@ -237,7 +238,7 @@ def process_thread():
         new_frame_ready.set()
 
 def display_thread():
-    global processed_frame, out, latest_web_frame, last_gesture, latest_gesture_probs
+    global processed_frame, out, latest_web_frame, last_gesture, latest_gesture_probs, fps
     frame_count = 0
     last_print = time.time()
     gesture_history = deque(maxlen=10)
