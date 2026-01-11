@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, computed, inject } from 'vue'
+import { ref, watch, onMounted, computed } from 'vue'
 import ToastComponent from './Toast.vue'
 
 defineProps({
@@ -16,17 +16,21 @@ const isRuninngProgramm = ref(false)
 const cameraUrl = '/api/camera'
 
 const appVersion = ref('not loaded')
-fetch(`https://api.github.com/repos/ogled/Gesturesphone/commits?per_page=1`).then(res => res.json()).then(commits => {
+fetch(`https://api.github.com/repos/ogled/Gesturesphone/commits?per_page=1`)
+  .then(res => res.json())
+  .then(commits => {
     appVersion.value = commits[0].sha.slice(0, 7)
-  });
+  })
+
 const cpuLoad = ref(0)
 const ramLoad = ref(0)
 const fps = ref(0)
+
 /* ===== Gestures ===== */
 const gestures = ref([])
+const gestureHistory = ref([])
 const isGesturesLoading = ref(false)
 const gesturesError = ref(null)
-
 
 const sortedGestures = computed(() =>
   [...gestures.value].sort((a, b) => b.confidence - a.confidence)
@@ -39,61 +43,63 @@ const otherGestures = computed(() => sortedGestures.value.slice(3, 10))
 onMounted(() => {
   const saved = localStorage.getItem('displayMode')
   if (saved) displayMode.value = saved
-  setInterval(() => {
-    loadUsageVals()
-  }, 500)
+
+  setInterval(loadUsageVals, 500)
 })
 
 async function startProgram() {
   const res = await fetch('/api/start')
   const data = await res.json()
-  if(res.status == 200)
-  {
-      isRuninngProgramm.value = true
-      setInterval(() => {
+
+  if (res.status === 200) {
+    isRuninngProgramm.value = true
+    setInterval(() => {
       loadGestures()
+      loadGestureHistory()
     }, 500)
-  }
-  else
-  {
+  } else {
     window.showToast('Error ' + res.status + ': ' + data.detail, 'error')
   }
 }
+
 async function loadGestures() {
   try {
     const res = await fetch('/api/gestures')
     if (!res.ok) return
 
     const data = await res.json()
-
     const raw = data?.gestures ?? {}
 
-    gestures.value = Object.entries(raw).map(
-      ([name, confidence]) => ({
-        name,
-        confidence
-      })
-    )
-  } catch (e) {
+    gestures.value = Object.entries(raw).map(([name, confidence]) => ({
+      name,
+      confidence,
+    }))
+  } catch {
     gestures.value = []
   }
 }
+async function loadGestureHistory() {
+  try {
+    const res = await fetch('/api/gesture-history')
+    if (!res.ok) return
 
-async function loadUsageVals() {
-  isGesturesLoading.value = true
-  gesturesError.value = null
-
-  const res = await fetch('/api/getUsageVals')
-  if (!res.ok) {
-    throw new Error('Ошибка загрузки покозателей загружености системы')
+    const data = await res.json()
+    gestureHistory.value = data.history
+  } catch (e) {
+    console.error(e)
   }
+}
+async function loadUsageVals() {
+  const res = await fetch('/api/getUsageVals')
+  if (!res.ok) return
+
   const data = await res.json()
   cpuLoad.value = data.CPU
   ramLoad.value = data.RAM
   fps.value = data.FPS
-  
 }
-watch(displayMode, (v) => localStorage.setItem('displayMode', v))
+
+watch(displayMode, v => localStorage.setItem('displayMode', v))
 </script>
 
 <template>
@@ -102,135 +108,106 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
     <nav class="tabs">
       <span class="projectName">{{ projectName }}</span>
 
-      <button
-        class="tab"
-        :class="{ active: activeTab === 'main' }"
-        @click="activeTab = 'main'"
-      >
+      <button class="tab" :class="{ active: activeTab === 'main' }" @click="activeTab = 'main'">
         Главная
       </button>
 
-      <button
-        class="tab"
-        :class="{ active: activeTab === 'settings' }"
-        @click="activeTab = 'settings'"
-      >
+      <button class="tab" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
         Настройки
       </button>
     </nav>
 
     <main class="content">
-      <!-- ===== MAIN ===== -->
       <section v-if="activeTab === 'main'" class="fill">
-        <!-- ===== PARTIAL MODE ===== -->
-        <div v-if="!isRuninngProgramm" class="fill">
-          <div class="StartingProgramm">
-            <button class="start-btn" @click="startProgram">
-              ▶ Запуск
-            </button>
-          </div>
+        <div v-if="!isRuninngProgramm" class="StartingProgramm">
+          <button class="start-btn" @click="startProgram">▶ Запуск</button>
         </div>
-        <div v-else-if="isRuninngProgramm == true" class="fill">
-          <div v-if="displayMode === 'partial'" class="layout">
-            <!-- Камера -->
-            <div class="main">
-              <img :src="cameraUrl" class="camera-feed" />
-            </div>
 
-            <!-- Жесты -->
-            <div class="gestures-panel">
-              <div class="top-gestures">
-                <h3>Наиболее вероятные</h3>
+        <div v-else class="layout">
+          <!-- Camera -->
+          <div class="main">
+            <img :src="cameraUrl" class="camera-feed" />
+          </div>
 
-                <div
-                  v-for="(g, i) in topGestures"
-                  :key="g.name"
-                  class="top-gesture"
-                >
-                  <div class="rank-badge">{{ i + 1 }}</div>
+          <!-- Right panel -->
+          <div class="gestures-panel">
+            <!-- Top -->
+            <section class="panel-card">
+              <h3>Наиболее вероятные</h3>
 
-                  <div class="info">
-                    <div class="name">{{ g.name }}</div>
-                    <div class="bar">
-                      <div
-                        class="bar-fill"
-                        :style="{ width: g.confidence + '%' }"
-                      />
-                    </div>
+              <div v-for="(g, i) in topGestures" :key="g.name" class="top-gesture">
+                <div class="rank-badge">{{ i + 1 }}</div>
+
+                <div class="info">
+                  <div class="name">{{ g.name }}</div>
+                  <div class="bar">
+                    <div class="bar-fill" :style="{ width: g.confidence + '%' }" />
                   </div>
-
-                  <div class="percent">{{ g.confidence }}%</div>
                 </div>
+
+                <div class="percent">{{ g.confidence }}%</div>
               </div>
+            </section>
 
-              <div class="other-gestures">
-                <h4>Другие варианты</h4>
+            <!-- Others -->
+            <section class="panel-card scroll">
+              <h4>Другие варианты</h4>
 
-                <div
-                  v-for="g in otherGestures"
-                  :key="g.name"
-                  class="other-row"
+              <div v-for="g in otherGestures" :key="g.name" class="other-row">
+                <span class="dot" />
+                <span>{{ g.name }}</span>
+                <span class="other-percent">{{ g.confidence }}%</span>
+              </div>
+            </section>
+
+            <!-- HISTORY -->
+            <section class="panel-card history">
+              <h4>История жестов</h4>
+
+              <div class="history-body">
+                <span
+                  v-for="(g, i) in gestureHistory"
+                  :key="i"
+                  class="gesture-word"
+                  :class="{ latest: i === gestureHistory.length - 1 }"
                 >
-                  <span class="dot"></span>
-                  <span class="other-name">{{ g.name }}</span>
-                  <span class="other-percent">{{ g.confidence }}%</span>
+                  {{ g }}
+                </span>
+
+                <div v-if="gestureHistory.length === 0" class="gesture-placeholder">
+                  Пока жесты не распознаны
                 </div>
-
-                <p v-if="gestures.length > 10" class="more-gestures">
-                  Здесь остальные {{ gestures.length - 10 }} жестов
-                </p>
               </div>
-            </div>
-          </div>
-        </div>
-        
-
-        <!-- ===== FULL MODE ===== -->
-        <div v-if="displayMode === 'full'" class="full-mode">
-          <div class="placeholder">
-            Полный режим отображения<br />
-            (будет реализован позже)
+            </section>
           </div>
         </div>
       </section>
 
-      <!-- ===== SETTINGS ===== -->
       <section v-if="activeTab === 'settings'" class="settings">
-        <div class="setting">
-          <label>Режим отображения</label>
+        <label>
+          Режим отображения
           <select v-model="displayMode">
             <option value="partial">Частичный</option>
             <option value="full">Полный</option>
           </select>
-        </div>
+        </label>
       </section>
     </main>
 
-    <!-- ===== STATUS BAR ===== -->
     <footer class="status-bar">
-      <span class="version">
-        {{ projectName }} • {{ appVersion }}
-      </span>
-
-      <div class="right-aligned">
-        <span class="cpu">CPU: <b>{{ cpuLoad }}%</b></span>
-        <span class="ram">RAM: <b>{{ ramLoad }}%</b></span>
-        <span class="fps">FPS: <b>{{ fps }}</b></span>
+      <span>{{ projectName }} • {{ appVersion }}</span>
+      <div>
+        CPU: <b>{{ cpuLoad }}%</b> |
+        RAM: <b>{{ ramLoad }}%</b> |
+        FPS: <b>{{ fps }}</b>
       </div>
     </footer>
   </div>
+
   <ToastComponent />
 </template>
 
 <style scoped>
-/* ===== Base ===== */
-.app {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: #f6f7f9;
-  font-family: system-ui, -apple-system;
-}
 
 .tabs {
   height: 50px;
@@ -269,47 +246,6 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
 
 .fill {
   height: 100%;
-}
-
-/* ===== Layout ===== */
-.layout {
-  height: 100%;
-  display: grid;
-  grid-template-columns: auto 40%;
-  gap: 1rem;
-}
-
-/* ===== Camera ===== */
-.main {
-  width: 100%;
-  height: 0;
-  padding-top: 75%;
-  position: relative;
-  background: black;
-  border-radius: 6px;
-  overflow: hidden;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.camera-feed {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-/* ===== Gestures ===== */
-.gestures-panel {
-  background: white;
-  border-radius: 12px;
-  padding: 1rem;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
 }
 
 .top-gestures {
@@ -407,28 +343,6 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
   color: #6b7280;
 }
 
-.cpu, .ram, .fps {
-  display: inline-flex;
-  align-items: center;
-  margin-right: 8px;
-}
-
-.cpu b, .ram b {
-  min-width: 4ch;
-  max-width: 4ch;
-  text-align: right;
-  padding-left: 2px;
-  display: inline-block;
-  font-variant-numeric: tabular-nums;
-}
-.fps b {
-  min-width: 3ch;
-  max-width: 3ch;
-  text-align: right;
-  display: inline-block;
-  font-variant-numeric: tabular-nums;
-}
-
 .right-aligned {
   display: flex;
   align-items: center;
@@ -453,7 +367,6 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
   transition: transform 0.07s ease, opacity 0.2s;
 }
 
-/* реакция на нажатие */
 .start-btn:active,
 .stop-btn:active {
   transform: scale(0.95);
@@ -464,11 +377,177 @@ watch(displayMode, (v) => localStorage.setItem('displayMode', v))
   margin-bottom: 0.5rem;
 }
 
+/* ===== Gesture history ===== */
+.gesture-history {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 0.6rem;
+  margin-top: 0.6rem;
+}
 
-/* ===== Mobile ===== */
-@media (max-width: 768px) {
-  .layout {
-    grid-template-columns: 1fr;
+.gesture-history h4 {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #6b7280;
+  margin-bottom: 0.4rem;
+}
+
+.history-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.gesture-chip {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #374151;
+  white-space: nowrap;
+}
+
+.gesture-chip.latest {
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 500;
+}
+
+.history-empty {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+/* ===== Base ===== */
+.app {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: #f6f7f9;
+  font-family: system-ui;
+}
+
+/* ===== Layout ===== */
+.layout {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  gap: 1rem;
+}
+
+/* ===== Camera ===== */
+.main {
+  background: black;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+}
+
+.camera-feed {
+  width: 100%;
+  object-fit: contain;
+}
+
+/* ===== Right panel ===== */
+.gestures-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+/* ===== Cards ===== */
+.panel-card {
+  background: white;
+  border-radius: 12px;
+  padding: 0.9rem;
+}
+
+.panel-card h3,
+.panel-card h4 {
+  margin-bottom: 0.6rem;
+  font-weight: 600;
+}
+
+.scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ===== History ===== */
+.history {
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+}
+
+.history-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 1.1rem;
+}
+
+.gesture-word {
+  opacity: 0;
+  animation: fadeIn 0.25s forwards;
+}
+
+.gesture-word.latest {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.gesture-placeholder {
+  color: #9ca3af;
+  font-size: 0.95rem;
+}
+
+/* ===== Anim ===== */
+@keyframes fadeIn {
+  to {
+    opacity: 1;
   }
 }
+
+@media (max-width: 768px) {
+
+  .content {
+    padding: 0.5rem;
+    overflow-y: auto;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+    gap: 0.6rem;
+  }
+
+  .main {
+    aspect-ratio: 4 / 3;
+    border-radius: 10px;
+  }
+
+  .gestures-panel {
+    gap: 0.6rem;
+  }
+
+  .panel-card {
+    padding: 0.7rem;
+  }
+
+  .history-body {
+    font-size: 1rem;
+  }
+
+  .tabs {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .status-bar {
+    display: none;
+  }
+}
+
+
 </style>

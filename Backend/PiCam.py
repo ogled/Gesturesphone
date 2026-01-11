@@ -15,6 +15,9 @@ from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
 CONF_THRESHOLD = 0.4
+MIN_HOLD_TIME = 1.4 
+MIN_SHOW_TIME = 0.5
+
 hCam = 640
 wCam = 480
 sequence_length = 14
@@ -25,6 +28,8 @@ latest_gesture_probs = {
     "ts": 0,
     "probs": {}
 }
+gesture_history = deque(maxlen=20)
+
 
 mp_hands = None
 mp_drawing = None
@@ -33,6 +38,8 @@ hands = None
 CAPTURE_FPS = 30
 DISPLAY_FPS = 24 
 DISPLAY_INTERVAL = 1.0 / DISPLAY_FPS
+MIN_CONFIDENNCE = 90
+
 fps = 0
 
 stopThreads = False
@@ -162,9 +169,12 @@ def capture_thread():
                 latest_frame = frame.copy()
         time.sleep(1.0 / CAPTURE_FPS)
 
+def get_text(gesture_history):
+    return " ".join(g.capitalize() for g in gesture_history)
+
 def process_thread():
     global latest_frame, processed_frame
-    gesture_name = "None"
+    gesture_name = ""
     confidence = 0.0
     all_probabilities = []
 
@@ -188,7 +198,7 @@ def process_thread():
         frame_id += 1
         if not results.multi_hand_landmarks:
             # feature_buffer.clear()
-            gesture_name = "None"
+            gesture_name = ""
             confidence = 0.0
         else:
             features = create_feature_vector(
@@ -225,7 +235,7 @@ def process_thread():
                         gesture_name = labels[best_idx]
                         confidence = best_conf
                     else:
-                        gesture_name = "None"
+                        gesture_name = None
                         confidence = best_conf
 
                     all_probabilities = probs_np.tolist()
@@ -238,10 +248,12 @@ def process_thread():
         new_frame_ready.set()
 
 def display_thread():
-    global processed_frame, out, latest_web_frame, last_gesture, latest_gesture_probs, fps
+    global processed_frame, out, latest_web_frame, last_gesture, latest_gesture_probs, fps, gesture_history
     frame_count = 0
     last_print = time.time()
-    gesture_history = deque(maxlen=10)
+    state = "NO_HANDS"
+    gesture_start_time = 0.0
+    last_added_gesture = None
     while not stopThreads:
         if not new_frame_ready.wait(timeout=1.0):
             continue
@@ -263,19 +275,53 @@ def display_thread():
         if save_video and out is not None:
             out.write(frame)
 
-        if gesture != "None":
-            gesture_history.append(gesture)
+        now = time.time()
+
+        if gesture == "":
+            if state == "TRACKING":
+                duration = now - gesture_start_time
+                if duration >= MIN_SHOW_TIME:
+                    if last_added_gesture != current_gesture:
+                        gesture_history.append(current_gesture)
+                        last_added_gesture = current_gesture
+                state = "NO_HANDS"
+
+        elif gesture != "":
+            if state == "NO_HANDS":
+                current_gesture = gesture
+                gesture_start_time = now
+                state = "TRACKING"
+
+            elif state == "TRACKING":
+                if gesture != current_gesture:
+                    current_gesture = gesture
+                    gesture_start_time = now
+
+                elif now - gesture_start_time >= MIN_HOLD_TIME:
+                    if last_added_gesture != current_gesture:
+                        gesture_history.append(current_gesture)
+                        last_added_gesture = current_gesture
+                        state = "FIXED"
+
+            elif state == "FIXED":
+                if gesture != current_gesture:
+                    current_gesture = gesture
+                    gesture_start_time = now
+                    state = "TRACKING"
+
+
         latest_web_frame = frame.copy()
         frame_count += 1
         now = time.time()
         if now - last_print >= 2.0:
+            text = get_text(gesture_history)
             fps = frame_count / (now - last_print)
             cpu_usage = psutil.cpu_percent(interval=None)
             most_common = max(set(gesture_history), key=gesture_history.count) if gesture_history else "None"
             stability = gesture_history.count(most_common)/len(gesture_history) if gesture_history else 0.0
             print(f"[INFO] FPS: {fps:.1f}, Latency: {latency:.1f}ms, CPU: {cpu_usage:.1f}%")
             print(f"       Current: {gesture} (conf: {confidence:.2f})")
-            print(f"       Most common: {most_common} (stability: {stability:.2f})")
+            print(f"       Sentence: {text}")
             frame_count = 0
             last_print = now
 

@@ -64,6 +64,12 @@ def api_start():
         PiCam.start()
     return JSONResponse({"status": "ok"})
 
+@app.get("/api/gesture-history")
+def get_gesture_history():
+    return JSONResponse({
+        "history": list(PiCam.gesture_history)
+    })
+
 @app.get("/")
 def index():
     return FileResponse("../Frontend/dist/index.html")
