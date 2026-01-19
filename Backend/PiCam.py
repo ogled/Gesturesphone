@@ -58,6 +58,8 @@ processed_frame = None
 lock = None
 new_frame_ready = None
 threads = None
+prev_coords = None
+prev_velocity = None
 
 def print_error(str):
     print(f"\033[31m[ERROR] {str}\033[0m")
@@ -128,6 +130,8 @@ class SimpleTCN(nn.Module):
         return self.arcface(x, labels)
 
 def create_feature_vector(multi_hand_landmarks, multi_handedness):
+    global prev_coords, prev_velocity, prev_coords, prev_velocity
+
     hands = np.zeros((2, 21, 3), dtype=np.float32)
 
     if multi_hand_landmarks and multi_handedness:
@@ -143,21 +147,108 @@ def create_feature_vector(multi_hand_landmarks, multi_handedness):
     left, right = hands[0], hands[1]
     coords = np.concatenate([left, right], axis=0).reshape(1, -1)  # 126
 
-    velocity = np.zeros_like(coords)
-    motion_energy = np.zeros((1, 1), dtype=np.float32)
+    # Скорость
+    if prev_coords is None:
+        velocity = np.zeros_like(coords)
+    else:
+        velocity = coords - prev_coords
 
+    # Ускорение
+    if prev_velocity is None:
+        acceleration = np.zeros_like(velocity)
+    else:
+        acceleration = velocity - prev_velocity
+
+    prev_coords = coords.copy()
+    prev_velocity = velocity.copy()
+
+    # Енергичность
+    motion_energy = np.linalg.norm(velocity, axis=1, keepdims=True)
+
+    # Наличие рук
     hands_present = (
         (np.abs(left).sum() > 0) + (np.abs(right).sum() > 0)
     ) / 2.0
     hands_count = np.array([[hands_present]], dtype=np.float32)
 
+    # Растояние между ладонями
+    inter_hand_dist = np.linalg.norm(left[0] - right[0], keepdims=True).reshape(1, 1)
+
+    def calculate_polygon_area(points):
+        x = points[:, 0]
+        y = points[:, 1]
+        x_shift = np.roll(x, -1)
+        y_shift = np.roll(y, -1)
+        area = 0.5 * np.abs(np.sum(x * y_shift) - np.sum(y * x_shift))
+        return area
+
+    # Занимаимая площадь ладони
+    palm_points = [0, 1, 5, 9, 13, 17]
+    left_area = calculate_polygon_area(left[palm_points, :2])
+    right_area = calculate_polygon_area(right[palm_points, :2])
+
+    left_area = np.array([[left_area]])
+    right_area = np.array([[right_area]])
+
+    # Растояния между точками
+    key_pairs = [(0, 4), (0, 8), (0, 12), (0, 16), (0, 20),
+                 (4, 8), (8, 12), (12, 16), (16, 20)]
+
+    def compute_distances(J):
+        dists = []
+        for i, j in key_pairs:
+            dists.append(np.linalg.norm(J[i] - J[j]))
+        return np.array(dists).reshape(1, -1)
+
+    left_dists = compute_distances(left)
+    right_dists = compute_distances(right)
+
+    # Растояние между кончиками пальцев
+    spread_left = np.linalg.norm(left[4] - left[20])
+    spread_right = np.linalg.norm(right[4] - right[20])
+
+    spread_left = np.array([[spread_left]])
+    spread_right = np.array([[spread_right]])
+
+    # Изгиб траектории
+    vel_norm = velocity / (np.linalg.norm(velocity) + 1e-6)
+
+    if prev_velocity is None:
+        curvature = np.zeros((1, 1), dtype=np.float32)
+    else:
+        prev_norm = prev_velocity / (np.linalg.norm(prev_velocity) + 1e-6)
+        curvature = np.linalg.norm(vel_norm - prev_norm)
+        curvature = np.array([[curvature]])
+
+    palm_vec = left[9] - left[0]
+    palm_dir_left = palm_vec / (np.linalg.norm(palm_vec) + 1e-6)
+
+    palm_vec = right[9] - right[0]
+    palm_dir_right = palm_vec / (np.linalg.norm(palm_vec) + 1e-6)
+
+    palm_dir_left = palm_dir_left.reshape(1, 3)
+    palm_dir_right = palm_dir_right.reshape(1, 3)
+
     feats = np.concatenate(
-        [hands_count, coords, velocity, motion_energy],
+        [hands_count,
+         coords,
+         velocity,
+         acceleration,
+         motion_energy,
+         left_area,
+         right_area,
+         inter_hand_dist,
+         left_dists,
+         right_dists,
+         spread_left,
+         spread_right,
+         curvature,
+         palm_dir_left,
+         palm_dir_right],
         axis=1
-    )  # 254
+    )
 
     return torch.tensor(feats, dtype=torch.float32)
-
 
 def capture_thread():
     global latest_frame
@@ -170,7 +261,7 @@ def capture_thread():
         time.sleep(1.0 / CAPTURE_FPS)
 
 def get_text(gesture_history):
-    return " ".join(g.capitalize() for g in gesture_history)
+    return " ".join(g.capitalize() for g in gesture_history if g != None)
 
 def process_thread():
     global latest_frame, processed_frame

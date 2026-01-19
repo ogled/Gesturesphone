@@ -43,7 +43,13 @@ class GestureDataset(Dataset):
         self.frame_dropout = frame_dropout
         self.noise_std = noise_std
         self.scale_jitter = scale_jitter
-
+        self.annotations = self.annotations[
+            self.annotations["attachment_id"].apply(
+                lambda x: os.path.exists(
+                    os.path.join(self.data_dir, "train" if train else "test", f"{x}.pt")
+                )
+            )
+        ].reset_index(drop=True)
         self.labels = sorted(self.annotations["text"].unique())
         self.label2idx = {c: i for i, c in enumerate(self.labels)}
 
@@ -74,9 +80,11 @@ class GestureDataset(Dataset):
             if torch.rand(1) < 0.5:
                 X = X * (1.0 + torch.randn(1).item() * self.scale_jitter)
             
-
         J_left = X[:, 0]
         J_right = X[:, 1]
+
+        # Растояние между ладонями
+        inter_hand_dist = torch.norm(J_left[:,0] - J_right[:,0], dim=1, keepdim=True)
 
         def norm_hand(J):
             wrist = J[:, 0:1]
@@ -88,18 +96,71 @@ class GestureDataset(Dataset):
         J_left = norm_hand(J_left)
         J_right = norm_hand(J_right)
 
-        coords = torch.cat([J_left, J_right], dim=1).view(T, -1)
+        coords = torch.cat([J_left, J_right], dim=1).view(T, -1) 
+
+        # Скорость
         velocity = torch.zeros_like(coords)
         velocity[1:] = coords[1:] - coords[:-1]
+        
+        # Ускорение
+        acceleration = torch.zeros_like(velocity)
+        acceleration[1:] = velocity[1:] - velocity[:-1]
 
-        motion_energy = torch.norm(velocity, dim=1, keepdim=True)
-        motion_energy = (motion_energy - motion_energy.mean()) / (motion_energy.std() + 1e-6)
+        # Енергичность
+        motion_energy = torch.norm(velocity, dim=1, keepdim=True) 
+        std = motion_energy.std(unbiased=False)
+        motion_energy = (motion_energy - motion_energy.mean()) / (std + 1e-6)
 
+        # Наличие рук
         left_present = (J_left.abs().sum(dim=(1,2)) > 0).float()
         right_present = (J_right.abs().sum(dim=(1,2)) > 0).float()
         hands_count = ((left_present + right_present) / 2.0).unsqueeze(1)
 
-        feats = torch.cat([hands_count, coords, velocity, motion_energy], dim=1)
+        def calculate_polygon_area(batch_points):
+            x = batch_points[..., 0]
+            y = batch_points[..., 1]
+            x_shift = torch.roll(x, shifts=-1, dims=-1)
+            y_shift = torch.roll(y, shifts=-1, dims=-1)
+            area = 0.5 * torch.abs(
+                torch.sum(x * y_shift, dim=-1) - torch.sum(y * x_shift, dim=-1)
+            )
+            return area
+
+        # Занимаимая площадь ладони
+        palm_points = [0, 1, 5, 9, 13, 17]
+        left_area = calculate_polygon_area(J_left[:, palm_points, :2]).unsqueeze(1)
+        right_area = calculate_polygon_area(J_right[:, palm_points, :2]).unsqueeze(1)
+
+        # Растояния между точками
+        key_pairs = [(0, 4), (0, 8), (0, 12), (0, 16), (0, 20),
+             (4, 8), (8, 12), (12, 16), (16, 20)]
+
+        def compute_distances(J):
+            dists = []
+            for i, j in key_pairs:
+                dist = torch.norm(J[:, i] - J[:, j], dim=1, keepdim=True)
+                dists.append(dist)
+            return torch.cat(dists, dim=1)
+
+        left_dists = compute_distances(J_left)
+        right_dists = compute_distances(J_right)
+
+        # Растояние между кончиками пальцев
+        spread_left = torch.norm(J_left[:,4] - J_left[:,20], dim=1, keepdim=True)
+        spread_right = torch.norm(J_right[:,4] - J_right[:,20], dim=1, keepdim=True)
+
+        # Изгиб траектории
+        vel_norm = velocity / (torch.norm(velocity, dim=1, keepdim=True)+1e-6)
+        curvature = torch.norm(vel_norm[1:] - vel_norm[:-1], dim=1, keepdim=True)
+        curvature = torch.cat([curvature[:1], curvature], dim=0)
+
+        palm_vec = J_left[:,9] - J_left[:,0]
+        palm_dir_left = palm_vec / (torch.norm(palm_vec, dim=1, keepdim=True)+1e-6)
+        palm_vec = J_right[:,9] - J_right[:,0]
+        palm_dir_right = palm_vec / (torch.norm(palm_vec, dim=1, keepdim=True)+1e-6)
+
+        feats = torch.cat([hands_count, coords, velocity, acceleration, motion_energy, left_area, right_area, inter_hand_dist, left_dists, right_dists, spread_left, spread_right,
+                           curvature, palm_dir_left, palm_dir_right], dim=1)
 
         if self.max_len is not None:
             if feats.size(0) > self.max_len:
@@ -175,7 +236,7 @@ class ArcMarginProduct(nn.Module):
         logits = cosine * (1 - one_hot) + target * one_hot
         return logits * self.s
     
-class SimpleTCN(nn.Module):
+class Model(nn.Module):
     def __init__(self, input_size, num_classes, emb_dim=256):
         super().__init__()
         self.conv1 = nn.Sequential(
@@ -296,7 +357,7 @@ def main():
     print(f"Input size: {input_size}")
     print(f"Num classes: {num_classes}")
 
-    model = SimpleTCN(input_size, num_classes).to(device)
+    model = Model(input_size, num_classes).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
