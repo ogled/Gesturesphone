@@ -1,13 +1,28 @@
+import threading
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from contextlib import asynccontextmanager
 import psutil
 import json
 import cv2
 import time
 import PiCam
+import uvicorn
+import webview
+import requests
+import platform
 
-app = FastAPI()
+host = "0.0.0.0"
+port = 80
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    PiCam.initialization()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
 
 clients = set()
 state = {
@@ -96,4 +111,26 @@ async def ws(ws: WebSocket):
     except:
         clients.remove(ws)
 
-PiCam.initialization()
+if __name__ == "__main__":
+    def start_server():
+        uvicorn.run("server:app", host=host, port=port, reload=False)
+
+    threading.Thread(target=start_server, daemon=True).start()
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+
+    scale = 1.0
+    if platform.system() == "Linux":
+        scale = 0.8 
+
+    server_up = False
+    while not server_up:
+        try:
+            resp = requests.get(f"http://{host}:{port}/api/getUsageVals", timeout=0.5)
+            if resp.status_code == 200:
+                server_up = True
+        except requests.exceptions.RequestException:
+            time.sleep(0.2)
+    
+    window = webview.create_window("Gesturesphone", f"http://{host}:{port}", fullscreen=True, focus=True, resizable=True)
+    webview.start(func=lambda: window.evaluate_js(f"document.body.style.zoom='{scale*100}%'"))

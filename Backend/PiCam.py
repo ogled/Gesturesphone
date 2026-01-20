@@ -7,7 +7,6 @@ import threading
 import psutil
 import torch
 import torch.nn as nn
-
 from collections import deque
 
 from pathlib import Path

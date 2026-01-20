@@ -1,4 +1,4 @@
-numpy
+numpy==1.24.3
 psutil
 Pillow
 mediapipe==0.10.9
@@ -8,3 +8,4 @@ pandas
 torch_optimizer
 tqdm
 uvicorn
+pywebview
