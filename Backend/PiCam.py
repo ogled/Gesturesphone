@@ -29,7 +29,6 @@ latest_gesture_probs = {
 }
 gesture_history = deque(maxlen=20)
 
-
 mp_hands = None
 mp_drawing = None
 hands = None

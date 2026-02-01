@@ -1,24 +1,30 @@
+from collections import deque
 import threading
-from fastapi import FastAPI, WebSocket
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+import AiTextCorecting
 from contextlib import asynccontextmanager
 import psutil
-import json
 import cv2
 import time
 import PiCam
 import uvicorn
 import webview
 import requests
-import platform
 
 host = "0.0.0.0"
+giga = None
 port = 80
+textFromAi = ""
+ai_busy = False
+tempGesturesHistory = deque(maxlen = 20)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global giga
     PiCam.initialization()
+    giga = AiTextCorecting.initialization()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -62,7 +68,6 @@ def gestures_feed():
         "gestures": data.get("probs", {})
     })
 
-
 @app.get("/api/camera")
 def camera_feed():
     return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -89,27 +94,45 @@ def get_gesture_history():
 def index():
     return FileResponse("../Frontend/dist/index.html")
 
-@app.websocket("/ws")
-async def ws(ws: WebSocket):
-    await ws.accept()
-    clients.add(ws)
+def run_ai_task():
+    global textFromAi, ai_busy, tempGesturesHistory
 
-    await ws.send_text(json.dumps(state))
+    ai_busy = True
 
     try:
-        while True:
-            msg = await ws.receive_text()
-            data = json.loads(msg)
+        text = ' '.join(tempGesturesHistory)
+        textFromAi = AiTextCorecting.get_response(giga, text)
 
-            if data["cmd"] == "start":
-                state["status"] = "running"
-            elif data["cmd"] == "stop":
-                state["status"] = "stopped"
-            for c in clients:
-                await c.send_text(json.dumps(state))
+    except Exception as e:
+        textFromAi = "[ERROR] AI unavailable"
+        print("AI error:", e)
 
-    except:
-        clients.remove(ws)
+    ai_busy = False
+
+@app.get("/api/ai-corect-gestures")
+async def ai_corected_gestures(background_tasks: BackgroundTasks):
+    global tempGesturesHistory, giga, ai_busy
+    if giga is None or ai_busy or len(PiCam.gesture_history) == 0:
+        return {"status": "error"}
+    tempGesturesHistory = PiCam.gesture_history.copy()
+    PiCam.gesture_history.clear()
+    background_tasks.add_task(run_ai_task)
+    return {"status": "started"}
+
+@app.get("/api/ai-get-status")
+async def ai_get_status():
+    global tempGesturesHistory, giga, ai_busy
+    if giga is None:
+        return {"status": "not_ready"}
+    return {"status": "ready"}
+
+@app.get("/api/get-ai-corect-text")
+async def get_ai_corected_text():
+    global textFromAi, ai_busy
+    return JSONResponse({
+        "text": textFromAi,
+        "busy": ai_busy
+    })
 
 if __name__ == "__main__":
     def start_server():
@@ -118,10 +141,6 @@ if __name__ == "__main__":
     threading.Thread(target=start_server, daemon=True).start()
     if host == "0.0.0.0":
         host = "127.0.0.1"
-
-    scale = 1.0
-    if platform.system() == "Linux":
-        scale = 0.8 
 
     server_up = False
     while not server_up:
@@ -133,4 +152,4 @@ if __name__ == "__main__":
             time.sleep(0.2)
     
     window = webview.create_window("Gesturesphone", f"http://{host}:{port}", fullscreen=True, focus=True, resizable=True)
-    webview.start(func=lambda: window.evaluate_js(f"document.body.style.zoom='{scale*100}%'"))
+    webview.start()
