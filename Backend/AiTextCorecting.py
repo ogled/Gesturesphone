@@ -109,7 +109,6 @@ def get_response_recording_mode(giga, user_text, retries=3, retry_delay=2):
 
     if not internet_available():
         return "[ERROR] No internet connection"
-
     payload = Chat(
         messages=[
             Messages(
