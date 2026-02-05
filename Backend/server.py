@@ -109,6 +109,30 @@ def run_ai_task():
 
     ai_busy = False
 
+def run_recording_ai_task():
+    global textFromAi, ai_busy, recording_buffer
+
+    ai_busy = True
+
+    try:
+        lines = []
+        for g in PiCam.recording_buffer:
+            lines.append(f"{g['gesture']} ({g['duration']} сек, {g['confidence']}%)")
+
+        payload_text = "".join(lines)
+
+        textFromAi = AiTextCorecting.get_response_recording_mode(giga, user_text=payload_text)
+        PiCam.gesture_history.clear()
+        PiCam.gesture_history.append(textFromAi)
+
+    except Exception as e:
+        textFromAi = "[ERROR] AI unavailable"
+        print("AI error:", e)
+
+    finally:
+        PiCam.recording_buffer.clear()
+        ai_busy = False
+
 @app.get("/api/ai-corect-gestures")
 async def ai_corected_gestures(background_tasks: BackgroundTasks):
     global tempGesturesHistory, giga, ai_busy
@@ -125,6 +149,29 @@ async def ai_get_status():
     if giga is None:
         return {"status": "not_ready"}
     return {"status": "ready"}
+
+@app.get("/api/clearHistory")
+async def clear_history():
+    PiCam.gesture_history.clear()
+    return {"status": "ok"}
+
+@app.get("/api/start-recording-mode")
+def start_recording():
+    PiCam.gesture_history.clear()
+    PiCam.recording_mode = True
+    return {"status": "recording_started"}
+
+
+@app.get("/api/end-recording-mode")
+def end_recording(background_tasks: BackgroundTasks):
+    PiCam.recording_mode = False
+
+    if not PiCam.recording_buffer:
+        return {"status": "empty"}
+
+    background_tasks.add_task(run_recording_ai_task)
+    PiCam.recording_buffer.clear()
+    return {"status": "processing"}
 
 @app.get("/api/get-ai-corect-text")
 async def get_ai_corected_text():

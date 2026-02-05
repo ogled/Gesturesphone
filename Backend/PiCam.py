@@ -14,7 +14,7 @@ from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
 CONF_THRESHOLD = 0.4
-MIN_HOLD_TIME = 1.4 
+MIN_HOLD_TIME = 0.6
 MIN_SHOW_TIME = 0.5
 
 hCam = 640
@@ -58,6 +58,8 @@ new_frame_ready = None
 threads = None
 prev_coords = None
 prev_velocity = None
+recording_mode = False
+recording_buffer = []
 
 def print_error(str):
     print(f"\033[31m[ERROR] {str}\033[0m")
@@ -337,7 +339,7 @@ def process_thread():
         new_frame_ready.set()
 
 def display_thread():
-    global processed_frame, out, latest_web_frame, last_gesture, latest_gesture_probs, fps, gesture_history
+    global processed_frame, out, latest_web_frame, last_gesture, latest_gesture_probs, fps, gesture_history, recording_mode, recording_buffer
     frame_count = 0
     last_print = time.time()
     state = "NO_HANDS"
@@ -388,9 +390,20 @@ def display_thread():
 
                 elif now - gesture_start_time >= MIN_HOLD_TIME:
                     if last_added_gesture != current_gesture:
+                        duration = now - gesture_start_time
+
                         gesture_history.append(current_gesture)
+
+                        if recording_mode:
+                            recording_buffer.append({
+                                "gesture": current_gesture,
+                                "duration": round(duration, 2),
+                                "confidence": int(confidence * 100)
+                            })
+
                         last_added_gesture = current_gesture
                         state = "FIXED"
+
 
             elif state == "FIXED":
                 if gesture != current_gesture:

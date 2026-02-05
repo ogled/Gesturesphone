@@ -1,269 +1,3 @@
-<script setup>
-import { ref, watch, onMounted, computed } from 'vue'
-import ToastComponent from './Toast.vue'
-
-defineProps({
-  projectName: {
-    type: String,
-    default: 'Gesturesphone'
-  },
-})
-
-/* ===== State ===== */
-const activeTab = ref('main')
-const displayMode = ref('partial')
-const isRuninngProgramm = ref(false)
-const cameraUrl = '/api/camera'
-
-const aiStatus = ref('not_ready')
-const isAiProcessing = ref(false)
-
-const appVersion = ref('not loaded')
-fetch(`https://api.github.com/repos/ogled/Gesturesphone/commits?per_page=1`)
-  .then(res => res.json())
-  .then(commits => {
-    appVersion.value = commits[0].sha.slice(0, 7)
-  })
-
-const cpuLoad = ref(0)
-const ramLoad = ref(0)
-const fps = ref(0)
-
-/* ===== Gestures ===== */
-const gestures = ref([])
-const gestureHistory = ref([])
-const isGesturesLoading = ref(false)
-const gesturesError = ref(null)
-
-const sortedGestures = computed(() =>
-  [...gestures.value].sort((a, b) => b.confidence - a.confidence)
-)
-
-const topGestures = computed(() => sortedGestures.value.slice(0, 3))
-
-/* ===== Lifecycle ===== */
-onMounted(() => {
-  setInterval(checkAiStatus, 2000)
-  checkAiStatus()
-  const saved = localStorage.getItem('displayMode')
-  if (saved) displayMode.value = saved
-
-  setInterval(loadUsageVals, 500)
-})
-
-async function startProgram() {
-  const res = await fetch('/api/start')
-  const data = await res.json()
-
-  if (res.status === 200) {
-    isRuninngProgramm.value = true
-    setInterval(() => {
-      loadGestures()
-      loadGestureHistory()
-    }, 500)
-  } else {
-    window.showToast('Error ' + res.status + ': ' + data.detail, 'error')
-  }
-}
-
-async function checkAiStatus() {
-  try {
-    const res = await fetch('/api/ai-get-status')
-    if (!res.ok) return
-    
-    const data = await res.json()
-    aiStatus.value = data.status
-  } catch (e) {
-    console.error('AI status check failed:', e)
-    aiStatus.value = 'error'
-  }
-}
-async function sendToAI() {
-  if (aiStatus.value !== 'ready' || isAiProcessing.value) return
-  
-  isAiProcessing.value = true
-
-  try {
-    const startRes = await fetch('/api/ai-corect-gestures')
-
-    if (!startRes.ok) throw new Error('Failed to start AI processing')
-    
-    const pollInterval = setInterval(async () => {
-      try {
-        const res = await fetch('/api/get-ai-corect-text')
-        if (!res.ok) return
-        const data = await res.json()
-        if (!data.busy) {
-          clearInterval(pollInterval)
-          isAiProcessing.value = false
-          window.showToast(data.text, 'ai')
-          checkAiStatus()
-        }
-      } catch (e) {
-        window.showToast('Ошибка получения результата от ИИ')
-        console.error('Polling failed:', e)
-        clearInterval(pollInterval)
-        isAiProcessing.value = false
-      }
-    }, 500)
-    
-  } catch (e) {
-    console.error('AI processing failed:', e)
-    window.showToast("AI processing failed")
-    isAiProcessing.value = false
-  }
-}
-
-async function loadGestures() {
-  try {
-    const res = await fetch('/api/gestures')
-    if (!res.ok) return
-
-    const data = await res.json()
-    const raw = data?.gestures ?? {}
-
-    gestures.value = Object.entries(raw).map(([name, confidence]) => ({
-      name,
-      confidence,
-    }))
-  } catch {
-    gestures.value = []
-  }
-}
-async function loadGestureHistory() {
-  try {
-    const res = await fetch('/api/gesture-history')
-    if (!res.ok) return
-
-    const data = await res.json()
-    gestureHistory.value = data.history
-  } catch (e) {
-    console.error(e)
-  }
-}
-async function loadUsageVals() {
-  const res = await fetch('/api/getUsageVals')
-  if (!res.ok) return
-
-  const data = await res.json()
-  cpuLoad.value = data.CPU
-  ramLoad.value = data.RAM
-  fps.value = data.FPS
-}
-
-watch(displayMode, v => localStorage.setItem('displayMode', v))
-</script>
-
-<template>
-  <div class="app">
-    <!-- Header -->
-    <nav class="tabs">
-      <span class="projectName">{{ projectName }}</span>
-
-      <button class="tab" :class="{ active: activeTab === 'main' }" @click="activeTab = 'main'">
-        Главная
-      </button>
-
-      <button class="tab" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
-        Настройки
-      </button>
-    </nav>
-
-    <main class="content">
-      <section v-if="activeTab === 'main'" class="fill">
-        <div v-if="!isRuninngProgramm" class="StartingProgramm">
-          <button class="start-btn" @click="startProgram">▶ Запуск</button>
-        </div>
-
-        <div v-else class="layout">
-          <!-- Camera -->
-          <div class="main">
-            <img :src="cameraUrl" class="camera-feed" />
-          </div>
-
-          <!-- Right panel -->
-          <div class="gestures-panel">
-            <!-- Top -->
-            <section class="panel-card">
-              <h3>Наиболее вероятные</h3>
-
-              <div v-for="(g, i) in topGestures" :key="g.name" class="top-gesture">
-                <div class="rank-badge">{{ i + 1 }}</div>
-
-                <div class="info">
-                  <div class="name">{{ g.name }}</div>
-                  <div class="bar">
-                    <div class="bar-fill" :style="{ width: g.confidence + '%' }" />
-                  </div>
-                </div>
-
-                <div class="percent">{{ g.confidence }}%</div>
-              </div>
-            </section>
-
-            <!-- HISTORY -->
-            <section class="panel-card history">
-              <div class="history-header">
-                <h4>История жестов</h4>
-                <button 
-                  class="ai-button"
-                  :class="{ 
-                    'ready': aiStatus === 'ready',
-                    'disabled': aiStatus !== 'ready',
-                    'processing': isAiProcessing
-                  }"
-                  @click="sendToAI"
-                  :disabled="aiStatus !== 'ready' || isAiProcessing"
-                >
-                  <span v-if="isAiProcessing" class="spinner">↻</span>
-                  <span v-else>Завершить высказывание</span>
-                </button>
-              </div>
-              <div class="history-body">
-                <span
-                  v-for="(g, i) in gestureHistory"
-                  :key="i"
-                  class="gesture-word"
-                  :class="{ latest: i === gestureHistory.length - 1 }"
-                >
-                  {{ g }}
-                </span>
-
-                <div v-if="gestureHistory.length === 0" class="gesture-placeholder">
-                  Пока жесты не распознаны
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      </section>
-
-      <section v-if="activeTab === 'settings'" class="settings">
-        <label>
-          Режим отображения
-          <select v-model="displayMode">
-            <option value="partial">Частичный</option>
-            <option value="full">Полный</option>
-          </select>
-        </label>
-      </section>
-    </main>
-
-    <footer class="status-bar">
-      <span>{{ projectName }} • {{ appVersion }}</span>
-      <div>
-        CPU: <b>{{ cpuLoad }}%</b> |
-        RAM: <b>{{ ramLoad }}%</b> |
-        FPS: <b>{{ fps }}</b>
-      </div>
-    </footer>
-  </div>
-  
-  <ToastComponent />
-</template>
-
-<style scoped>
-
 .tabs {
   height: 50px;
   display: flex;
@@ -573,7 +307,6 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
   }
 }
 
-/* ===== Ai button ===== */
 .history-header {
   display: flex;
   justify-content: space-between;
@@ -581,41 +314,6 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
   margin-bottom: 0.6rem;
   flex-wrap: wrap;
   gap: 0.5rem;
-}
-
-.ai-button {
-  padding: 0.6rem 1rem;
-  border-radius: 8px;
-  border: none;
-  font-size: 0.75rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  white-space: nowrap;
-}
-
-.ai-button.ready:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-}
-
-.ai-button.disabled {
-  background: #9ca3af;
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-
-.ai-button.processing {
-  background: #6b7280;
-}
-
-.ai-button .spinner {
-  animation: spin 1s linear infinite;
 }
 
 /* Анимации */
@@ -680,12 +378,6 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
     text-align: center;
   }
   
-  .ai-button {
-    width: 100%;
-    padding: 0.5rem;
-    font-size: 0.8rem;
-  }
-  
   .history-body {
     height: calc(100% - 70px);
     overflow-y: auto;
@@ -738,11 +430,7 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
     flex: 1;
     text-align: left;
   }
-  
-  .ai-button {
-    width: auto;
-    min-width: 160px;
-  }
+
 }
 
 @media (max-width: 480px) {
@@ -775,12 +463,6 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
   
   .panel-card {
     padding: 0.5rem;
-  }
-  
-  .ai-button {
-    font-size: 0.7rem;
-    padding: 0.4rem 0.6rem;
-    min-width: 140px;
   }
   
   .history-body {
@@ -816,10 +498,8 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
 .history-body {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.4rem;
   align-content: flex-start;
-  padding: 4px 0;
-  min-height: auto;
 }
 
 .gesture-word {
@@ -833,8 +513,10 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
   line-height: 1.4;
   height: fit-content;
   transition: all 0.2s;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word; 
   align-items: center;
+  overflow-wrap: anywhere;
   justify-content: center;
 }
 
@@ -999,4 +681,127 @@ watch(displayMode, v => localStorage.setItem('displayMode', v))
     font-size: 0.8rem;
   }
 }
-</style>
+
+.history-buttons {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.history-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 1rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.history-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.history-btn.clear {
+  background: #ef4444;
+  color: white;
+}
+
+.history-btn.start {
+  background: #2563eb;
+  color: white;
+}
+
+.history-btn.send {
+  background: #22c55e;
+  color: white;
+}
+
+.history-btn.disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+@media (max-width: 480px) {
+  .history-buttons {
+    gap: 0.2rem;
+  }
+
+  .history-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 0.9rem;
+  }
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.record-dot {
+  width: 12px;
+  height: 12px;
+  background: #ef4444;
+  border-radius: 50%;
+  animation: pulse 1.2s infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.recording-view {
+  flex: 1;
+  min-height: 120px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  text-align: center;
+  padding: 0.5rem;
+}
+
+
+.recording-text {
+  font-size: 0.95rem;
+  color: #374151;
+  font-weight: 500;
+}
+
+.recording-animation {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  height: 30px;
+}
+
+.recording-animation span {
+  width: 6px;
+  height: 100%;
+  background: #ef4444;
+  border-radius: 4px;
+  animation: wave 1s infinite ease-in-out;
+}
+
+.recording-animation span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.recording-animation span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes wave {
+  0% { height: 6px; }
+  50% { height: 28px; }
+  100% { height: 6px; }
+}

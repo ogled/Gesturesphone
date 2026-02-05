@@ -1,4 +1,5 @@
 {
     "TOKEN": "",
-    "PATH_TO_SYSTEM_PROMT" : "Config/systemPromt.txt"
+    "PATH_TO_SYSTEM_PROMT" : "Config/systemPromt.txt",
+    "PATH_TO_SYSTEM_PROMT_RECORDING" : "Config/systemPromtRecording.txt"
 }
