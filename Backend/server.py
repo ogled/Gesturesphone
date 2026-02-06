@@ -170,6 +170,7 @@ def end_recording(background_tasks: BackgroundTasks):
         return {"status": "empty"}
 
     background_tasks.add_task(run_recording_ai_task)
+    PiCam.gesture_history.clear()
     return {"status": "processing"}
 
 @app.get("/api/get-ai-corect-text")
