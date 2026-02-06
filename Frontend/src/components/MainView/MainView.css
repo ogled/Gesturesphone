@@ -673,12 +673,8 @@
 
 @media (max-width: 1024px) and (max-height: 600px) {
   .gesture-word {
-    white-space: normal;
-    word-break: break-word;
-    line-height: 1.2;
-    text-align: center;
-    padding: 3px 6px;
-    font-size: 0.8rem;
+    margin: 4px 1px;
+    font-size: 1.25rem;
   }
 }
 
