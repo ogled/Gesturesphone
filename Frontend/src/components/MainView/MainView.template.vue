@@ -87,7 +87,7 @@ defineProps({
                     }"
                    @click="clearHustory" title="Очистить историю"
                    :disabled="isRecordingMode.value"
-                  >🗑</button>
+                  ><img src="@/assets/trash-2.svg" alt="Очистить" class="icon"></button>
                   <button 
                     class="history-btn start"
                     :class="{ 
@@ -101,7 +101,7 @@ defineProps({
                         ? 'Закончить высказывание' 
                         : 'Начать высказывание'"
                     >
-                    <span v-if="!isRecordingMode.value">🗨</span>
+                    <span v-if="!isRecordingMode.value"><img src="@/assets/mic.svg" alt="Очистить" class="icon"></span>
                     <span v-else class="record-dot"></span>
                   </button>
 
@@ -116,7 +116,7 @@ defineProps({
                     :disabled="aiStatus.value !== 'ready' || isAiProcessing.value || isRecordingMode.value"
                     title="Отправить текущую историю на обработку"
                   >
-                    <span v-if="!isAiProcessing.value">➡️</span>
+                    <span v-if="!isAiProcessing.value"><img src="@/assets/send.svg" alt="Очистить" class="icon"></span>
                     <span v-else class="spinner"></span>
                   </button>
                 </div>
