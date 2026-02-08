@@ -97,8 +97,8 @@ export function useMainView() {
     try {
       const res = await fetch('/api/ai-get-status')
       if (!res.ok) return  
-      const contentType = res.headers.get('content-type')
-      if (contentType && !contentType.includes('application/json')) return
+      const contentType = res.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) return
       const data = await res.json()
       aiStatus.value = data.status
     } catch (e) {
@@ -125,9 +125,10 @@ export function useMainView() {
           if (!data.busy) {
             clearInterval(pollInterval)
             isAiProcessing.value = false
-            window.showToast(data.text, 'ai')
+            const text = data?.text ?? ' '
+            window.showToast(text, 'ai')
             checkAiStatus()
-            if (playAIResults.value) {
+            if (playAIResults.value && text) {
               speakText(data.text)
             }
           }
@@ -159,8 +160,8 @@ export function useMainView() {
 	  try {
 	    const res = await fetch('/api/gestures')
 	    if (!res.ok) return
-      const contentType = res.headers.get('content-type')
-      if (contentType && !contentType.includes('application/json')) return
+      const contentType = res.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) return
 	    const data = await res.json()
 	    const raw = data?.gestures ?? {}
 
@@ -177,8 +178,8 @@ export function useMainView() {
     try {
       const res = await fetch('/api/gesture-history')
       if (!res.ok) return
-      const contentType = res.headers.get('content-type')
-      if (!contentType || !contentType.includes('application/json')) return
+      const contentType = res.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) return
       const data = await res.json()
       const newHistory = Array.isArray(data.history) ? data.history : []
       if (newHistory.length === 0) {
@@ -206,8 +207,8 @@ export function useMainView() {
 	async function loadUsageVals() {
 	  const res = await fetch('/api/getUsageVals')
 	  if (!res.ok) return
-    const contentType = res.headers.get('content-type')
-      if (contentType && !contentType.includes('application/json')) return
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.includes('application/json')) return
 	  const data = await res.json()
 	  cpuLoad.value = data.CPU
 	  ramLoad.value = data.RAM

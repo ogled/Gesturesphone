@@ -6,12 +6,14 @@ from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 import AiTextCorecting
 from contextlib import asynccontextmanager
 import psutil
+import os
 import cv2
 import time
 import PiCam
 import uvicorn
-import webview
 import requests
+import shutil
+import subprocess
 
 host = "0.0.0.0"
 giga = None
@@ -194,11 +196,36 @@ async def get_ai_corected_text():
         "busy": ai_busy
     })
 
+def open_in_browser(url):
+    if "DISPLAY" not in os.environ:
+        print("[WARN] No DISPLAY found, GUI not available")
+        return False
+
+    browsers = [
+        ("chromium-browser", ["--disable-infobars", "--noerrdialogs", "--window-focus", "--start-fullscreen", "--password-store=basic", "--user-data-dir=/tmp/chrome_temp_profile"]),
+        ("chromium", ["--disable-infobars", "--noerrdialogs", "--window-focus", "--start-fullscreen", "--password-store=basic", "--user-data-dir=/tmp/chrome_temp_profile"]),
+    ]
+
+    for browser, args in browsers:
+        path = shutil.which(browser)
+        if path:
+            subprocess.Popen(
+                [path, *args, url],
+                env=os.environ
+            )
+            print(f"[INFO] Opened in {browser}")
+            return True
+
+    print("[WARN] Chromium not found")
+    return False
+
 if __name__ == "__main__":
     def start_server():
         uvicorn.run("server:app", host=host, port=port, reload=False)
 
-    threading.Thread(target=start_server, daemon=True).start()
+    server_thread = threading.Thread(target=start_server)
+    server_thread.start()
+
     if host == "0.0.0.0":
         host = "127.0.0.1"
 
@@ -211,5 +238,9 @@ if __name__ == "__main__":
         except requests.exceptions.RequestException:
             time.sleep(0.2)
     
-    window = webview.create_window("Gesturesphone", f"http://{host}:{port}", fullscreen=True, focus=True, resizable=True)
-    webview.start()
+    open_in_browser(f"http://{host}:{port}")
+
+    try:
+        server_thread.join()
+    except KeyboardInterrupt:
+        print("Shutting down...")

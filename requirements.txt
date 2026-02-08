@@ -8,5 +8,4 @@ pandas
 torch_optimizer
 tqdm
 uvicorn
-pywebview
 gigachat
