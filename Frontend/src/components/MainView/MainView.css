@@ -248,6 +248,7 @@
 .gesture-word {
   opacity: 0;
   animation: fadeIn 0.25s forwards;
+  user-select: none
 }
 
 .gesture-word.latest {
@@ -806,4 +807,42 @@
   width: 20px !important;
   height: 20px !important;
   display: block;
+}
+.settings {
+  max-width: 420px;
+  margin: 0 auto;
+}
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+.setting-row label {
+  font-size: 0.85rem;
+  color: #374151;
+  font-weight: 500;
+}
+.setting-row select,
+.setting-row input[type="range"] {
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  font-size: 0.9rem;
+}
+.test-voice-btn {
+  margin-top: 0.5rem;
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  border: none;
+  background: #2563eb;
+  color: white;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.test-voice-btn:active {
+  transform: scale(0.97);
+}
+.hint {
+  font-size: 0.75rem;
+  color: #ef4444;
 }

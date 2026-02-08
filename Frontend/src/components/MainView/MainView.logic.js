@@ -1,5 +1,32 @@
 import { ref, computed, watch, onMounted } from 'vue'
 
+export function useLocalStorage(key, defaultValue) {
+  const state = ref(defaultValue)
+
+  try {
+    const saved = localStorage.getItem(key)
+    if (saved !== null) {
+      state.value = JSON.parse(saved)
+    }
+  } catch (e) {
+    console.warn(`localStorage load failed for ${key}`, e)
+  }
+
+  watch(
+    state,
+    (v) => {
+      try {
+        localStorage.setItem(key, JSON.stringify(v))
+      } catch (e) {
+        console.warn(`localStorage save failed for ${key}`, e)
+      }
+    },
+    { deep: true }
+  )
+
+  return state
+}
+
 export function useMainView() {
   const projectName = 'Gesturesphone'
   const appVersion = ref('not loaded')
@@ -18,6 +45,12 @@ export function useMainView() {
 
   const aiStatus = ref('not_ready')
   const isAiProcessing = ref(false)
+  
+  const selectedVoice = useLocalStorage("selectedVoice", ref("НЕТ"))
+  const voices = ref([])
+  const volume = useLocalStorage("volume", ref(0.5))
+  const playGestureHistory = useLocalStorage("playGestureHistory", ref(false))
+  const playAIResults = useLocalStorage("playAIResults", ref(false))
 
   const cpuLoad = ref(0)
   const ramLoad = ref(0)
@@ -35,6 +68,15 @@ export function useMainView() {
     }
     return result
   })
+
+  function loadVoices() {
+    const allVoices = speechSynthesis.getVoices()
+    voices.value = allVoices.filter(v => v.lang.startsWith('ru'))
+
+    if (selectedVoice.value === "НЕТ" && voices.value.length > 0) {
+      selectedVoice.value = voices.value[0].name
+    }
+  }
 
   async function startProgram() {
       const res = await fetch('/api/start')
@@ -85,6 +127,9 @@ export function useMainView() {
             isAiProcessing.value = false
             window.showToast(data.text, 'ai')
             checkAiStatus()
+            if (playAIResults.value) {
+              speakText(data.text)
+            }
           }
         } catch (e) {
           window.showToast('Ошибка получения результата от ИИ')
@@ -127,18 +172,36 @@ export function useMainView() {
 	    gestures.value = []
 	  }
 	}
+  const lastSpokenIndex = ref(0)
 	async function loadGestureHistory() {
-	  try {
-	    const res = await fetch('/api/gesture-history')
-	    if (!res.ok) return
+    try {
+      const res = await fetch('/api/gesture-history')
+      if (!res.ok) return
       const contentType = res.headers.get('content-type')
-      if (contentType && !contentType.includes('application/json')) return
-	    const data = await res.json()
-	    gestureHistory.value = data.history
-	  } catch (e) {
-	    console.error(e)
-	  }
-	}
+      if (!contentType || !contentType.includes('application/json')) return
+      const data = await res.json()
+      const newHistory = Array.isArray(data.history) ? data.history : []
+      if (newHistory.length === 0) {
+        gestureHistory.value = []
+        lastSpokenIndex.value = 0
+        return
+      }
+      const newItems = newHistory.slice(lastSpokenIndex.value)
+      gestureHistory.value = newHistory
+      if (playGestureHistory.value && newItems.length > 0 && !isRecordingMode.value) {
+        for (const item of newItems) {
+          speakText(
+            typeof item === 'string'
+              ? item
+              : item.text ?? ''
+          )
+        }
+      }
+      lastSpokenIndex.value = newHistory.length
+    } catch (e) {
+      console.error(e)
+    }
+  }
 
 	async function loadUsageVals() {
 	  const res = await fetch('/api/getUsageVals')
@@ -156,17 +219,29 @@ export function useMainView() {
 	  const res = await fetch('/api/clearHistory')
 	  if (!res.ok) return
 	}
+  
+  async function speakText(text) {
+    if (!selectedVoice.value) return
+    const utter = new SpeechSynthesisUtterance(text)
+    const voice = voices.value.find(v => v.name === selectedVoice.value)
+    if (voice) utter.voice = voice
+    utter.lang = 'ru-RU'
+    utter.volume = volume.value
+    speechSynthesis.cancel()
+    speechSynthesis.speak(utter)
+  }
+  
+  async function deleteGesture(gestureName, index) {
+    const res = await fetch(`/api/del-gesture?id=${index}&name=${encodeURIComponent(gestureName)}`, {method: 'DELETE'})
+  }
 
   onMounted(() => {
-	  setInterval(checkAiStatus, 2000)
+    loadVoices()
+    speechSynthesis.onvoiceschanged = loadVoices
 	  checkAiStatus()
-	  const saved = localStorage.getItem('displayMode')
-	  if (saved) displayMode.value = saved
-
+    setInterval(checkAiStatus, 2000)
 	  setInterval(loadUsageVals, 500)
 	})
-
-  watch(displayMode, v => localStorage.setItem('displayMode', v))
 
   return {
     projectName,
@@ -178,16 +253,23 @@ export function useMainView() {
     cameraUrl,
     aiStatus,
     isAiProcessing,
+    voices,
+    selectedVoice,
+    volume,
     cpuLoad,
     ramLoad,
     fps,
     gestures,
     gestureHistory,
     topGestures,
+    playGestureHistory,
+    playAIResults,
 
     toggleRecording,
     startProgram,
     sendToAI,
-    clearHustory
+    clearHustory,
+    speakText,
+    deleteGesture
   }
 }

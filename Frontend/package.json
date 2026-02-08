@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "loudness": "^0.4.2",
     "vue": "^3.5.25"
   },
   "devDependencies": {

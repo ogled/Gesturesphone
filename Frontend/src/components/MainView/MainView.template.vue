@@ -11,16 +11,24 @@ defineProps({
   cameraUrl: String,
   aiStatus: Object,
   isAiProcessing: Object,
+  voices: Object,
+  selectedVoice: Object,
+  volume: Object,
   cpuLoad: Object,
   ramLoad: Object,
   fps: Object,
   gestures: Object,
   gestureHistory: Object,
   topGestures: Object,
+  playGestureHistory: Object,
+  playAIResults: Object,
+
   toggleRecording: Function,
   startProgram: Function,
   sendToAI: Function,
-  clearHustory: Function
+  clearHustory: Function,
+  speakText: Function,
+  deleteGesture: Function
 })
 </script>
 
@@ -131,6 +139,7 @@ defineProps({
                     latest: i === ((gestureHistory.value?.length ?? 0) - 1),
                     phrase: g.includes(' ')
                   }"
+                  @click="deleteGesture(g, i)"
                 >
                   {{ g }}
                 </span>
@@ -156,8 +165,50 @@ defineProps({
         </div>
       </section>
 
-      <section v-if="activeTab.value === 'settings'" class="settings">
-        <label></label>
+      <section v-if="activeTab.value === 'settings'" class="settings panel-card">
+        <h3>Озвучка</h3>
+        <div class="setting-row">
+          <label>Голос</label>
+          <select v-model="selectedVoice.value">
+            <option
+              v-for="v in voices.value"
+              :key="v.name"
+              :value="v.name"
+            >
+              {{ v.name }} ({{ v.lang }})
+            </option>
+          </select>
+        
+          <div v-if="voices.value.length === 0" class="hint">
+            Русские голоса не найдены в системе
+          </div>
+        </div>
+      
+        <div class="setting-row">
+          <label>Громкость: {{ Math.round(volume.value * 100) }}%</label>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            v-model="volume.value"
+          />
+        </div>
+        
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" v-model="playGestureHistory.value" />
+            Проигрывать историю жестов
+          </label>
+          <label>
+            <input type="checkbox" v-model="playAIResults.value" />
+            Проигрывать результаты обработки ИИ
+          </label>
+        </div>
+
+        <button class="test-voice-btn" @click="speakText('Проверка звука')">
+          🔊 Проверить голос
+        </button>
       </section>
     </main>
 

@@ -86,9 +86,22 @@ def api_start():
 
 @app.get("/api/gesture-history")
 def get_gesture_history():
-    return JSONResponse({
-        "history": list(PiCam.gesture_history)
-    })
+    if PiCam.recording_mode:
+        return JSONResponse({
+            "history": list()
+        })
+    else:
+        return JSONResponse({
+            "history": list(PiCam.gesture_history)
+        })
+    
+@app.delete("/api/del-gesture")
+def delete_gesture(id: int = 0, name: str = ""):
+    if PiCam.gesture_history[id] == name:
+        del PiCam.gesture_history[id]
+    elif PiCam.gesture_history[id - 1] == name:
+         del PiCam.gesture_history[id - 1]
+    return JSONResponse({"status": "ok"})
 
 @app.get("/")
 def index():
