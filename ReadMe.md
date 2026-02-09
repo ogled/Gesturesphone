@@ -1,7 +1,9 @@
 <p align="center">
-  <source media="(prefers-color-scheme: dark)" srcset="Assets/Logo_dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="Assets/Logo_light.svg">
-  <img src="Assets/Logo_light.svg" alt="Logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Assets/Logo_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="Assets/Logo_light.svg">
+    <img src="Assets/Logo_light.svg" alt="Logo">
+  </picture>
 </p>
 
 --------------------------------------------------------------------------------
