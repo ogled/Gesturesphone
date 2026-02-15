@@ -181,7 +181,8 @@ export function useMainView() {
       const contentType = res.headers.get('content-type') || ''
       if (!contentType.includes('application/json')) return
       const data = await res.json()
-      const newHistory = Array.isArray(data.history) ? data.history : []
+      let newHistory = Array.isArray(data.history) ? data.history : []
+      newHistory = newHistory.filter(item => item != null)
       if (newHistory.length === 0) {
         gestureHistory.value = []
         lastSpokenIndex.value = 0
@@ -233,6 +234,7 @@ export function useMainView() {
   }
   
   async function deleteGesture(gestureName, index) {
+    if (gestureName == null) return
     const res = await fetch(`/api/del-gesture?id=${index}&name=${encodeURIComponent(gestureName)}`, {method: 'DELETE'})
   }
 

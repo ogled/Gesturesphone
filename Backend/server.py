@@ -221,7 +221,7 @@ def open_in_browser(url):
 
 if __name__ == "__main__":
     def start_server():
-        uvicorn.run("server:app", host=host, port=port, reload=False)
+        uvicorn.run(app, host=host, port=port, reload=False)
 
     server_thread = threading.Thread(target=start_server)
     server_thread.start()

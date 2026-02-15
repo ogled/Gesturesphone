@@ -6,6 +6,7 @@ from torch_optimizer import RAdam
 from tqdm import tqdm
 from pathlib import Path
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import classification_report, confusion_matrix
 
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
@@ -64,39 +65,110 @@ class GestureDataset(Dataset):
         )
         return torch.load(path, map_location="cpu")
 
+    def apply_augmentations(self, J_left, J_right):
+        T = J_left.shape[0]
+
+        # 1. Time warping (оставляем)
+        if torch.rand(1) < 0.5:
+            warp_factor = 1.0 + torch.randn(1).item() * 0.2
+            new_len = max(2, int(T * warp_factor))
+            J_left = F.interpolate(
+                J_left.permute(2,1,0).unsqueeze(0),
+                size=(21, new_len), mode='bilinear', align_corners=False
+            ).squeeze(0).permute(2,1,0)
+            J_right = F.interpolate(
+                J_right.permute(2,1,0).unsqueeze(0),
+                size=(21, new_len), mode='bilinear', align_corners=False
+            ).squeeze(0).permute(2,1,0)
+            T = new_len
+
+        # 2. Random shift
+        if torch.rand(1) < 0.3:
+            shift = torch.randint(0, T, (1,)).item()
+            J_left = torch.roll(J_left, shifts=shift, dims=0)
+            J_right = torch.roll(J_right, shifts=shift, dims=0)
+
+        # 3. Random reverse
+        if torch.rand(1) < 0.2:
+            J_left = torch.flip(J_left, dims=[0])
+            J_right = torch.flip(J_right, dims=[0])
+
+        # 4. Frame dropout
+        if torch.rand(1) < 0.3:
+            drop_len = int(T * self.frame_dropout)
+            if drop_len > 0 and T > drop_len + 1:
+                drop_start = torch.randint(0, T - drop_len, (1,)).item()
+                if drop_start > 0:
+                    J_left[drop_start:drop_start+drop_len] = J_left[drop_start-1:drop_start]
+                    J_right[drop_start:drop_start+drop_len] = J_right[drop_start-1:drop_start]
+
+        # 5. Temporal cutout
+        if torch.rand(1) < 0.2:
+            cut_len = int(T * 0.1)  # 10% длины
+            if cut_len > 0 and T > cut_len:
+                cut_start = torch.randint(0, T - cut_len, (1,)).item()
+                J_left[cut_start:cut_start+cut_len] = 0
+                J_right[cut_start:cut_start+cut_len] = 0
+
+        # 6. Гауссов шум
+        if torch.rand(1) < 0.5:
+            J_left += torch.randn_like(J_left) * self.noise_std
+            J_right += torch.randn_like(J_right) * self.noise_std
+
+        # 7. Масштабирование
+        if torch.rand(1) < 0.5:
+            scale_left = 1.0 + torch.randn(1).item() * self.scale_jitter
+            scale_right = 1.0 + torch.randn(1).item() * self.scale_jitter
+            J_left *= scale_left
+            J_right *= scale_right
+
+        # 8. Поворот кисти (вращение в плоскости ладони)
+        if torch.rand(1) < 0.3:
+            angle_left = (torch.rand(1).item() - 0.5) * 40  # [-20, 20] градусов
+            angle_right = (torch.rand(1).item() - 0.5) * 40
+            J_left = self.rotate_hand(J_left, angle_left)
+            J_right = self.rotate_hand(J_right, angle_right)
+
+        return J_left, J_right
+    
+    def rotate_hand(self, J, angle_deg):
+        angle = torch.tensor(angle_deg * np.pi / 180)
+        c, s = torch.cos(angle), torch.sin(angle)
+        rot_mat = torch.tensor([[c, -s, 0],
+                                [s,  c, 0],
+                                [0,  0, 1]], device=J.device, dtype=J.dtype)
+        wrist = J[:, 0:1]
+        J_centered = J - wrist
+        J_rotated = torch.einsum('ij,tkj->tki', rot_mat, J_centered)
+
+        return J_rotated + wrist
     def __getitem__(self, idx):
         row = self.annotations.iloc[idx]
         label = torch.tensor(self.label2idx[row["text"]], dtype=torch.long)
 
         X = self._load_tensor(row["attachment_id"], row["train"])
         T = X.shape[0]
-
-        if self.augment:
-            if torch.rand(1) < 0.3:
-                drop = torch.randperm(T)[: int(T * self.frame_dropout)]
-                X[drop] = 0
-            if torch.rand(1) < 0.5:
-                X = X + torch.randn_like(X) * self.noise_std
-            if torch.rand(1) < 0.5:
-                X = X * (1.0 + torch.randn(1).item() * self.scale_jitter)
             
         J_left = X[:, 0]
         J_right = X[:, 1]
 
-        # Растояние между ладонями
-        inter_hand_dist = torch.norm(J_left[:,0] - J_right[:,0], dim=1, keepdim=True)
-
         def norm_hand(J):
-            wrist = J[:, 0:1]
-            Jc = J - wrist
-            palm = Jc[:, 9]
-            scale = torch.norm(palm, dim=1, keepdim=True) + 1e-6
-            return Jc / scale.view(-1, 1, 1)
+            wrist = J[:, 0:1]    
+            Jc = J - wrist       
+            palm = Jc[:, 9]      
+            scale = torch.norm(palm, dim=1, keepdim=True)
+            scale = torch.clamp(scale, min=1e-6)
+            Jc = Jc / scale.view(-1, 1, 1)
+            return Jc
 
         J_left = norm_hand(J_left)
         J_right = norm_hand(J_right)
 
-        coords = torch.cat([J_left, J_right], dim=1).view(T, -1) 
+        if self.augment:
+            J_left, J_right = self.apply_augmentations(J_left, J_right)
+            T = J_left.shape[0]
+
+        coords = torch.cat([J_left, J_right], dim=1).view(T, -1)
 
         # Скорость
         velocity = torch.zeros_like(coords)
@@ -116,6 +188,9 @@ class GestureDataset(Dataset):
         right_present = (J_right.abs().sum(dim=(1,2)) > 0).float()
         hands_count = ((left_present + right_present) / 2.0).unsqueeze(1)
 
+        # Растояние между ладонями
+        inter_hand_dist = torch.norm(J_left[:,0] - J_right[:,0], dim=1, keepdim=True)
+        
         def calculate_polygon_area(batch_points):
             x = batch_points[..., 0]
             y = batch_points[..., 1]
@@ -235,41 +310,54 @@ class ArcMarginProduct(nn.Module):
 
         logits = cosine * (1 - one_hot) + target * one_hot
         return logits * self.s
-    
+
 class Model(nn.Module):
-    def __init__(self, input_size, num_classes, emb_dim=256):
+    def __init__(self, input_size, num_classes, emb_dim=512):
         super().__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(input_size, 256, 5, padding=2),
+
+        self.local_branch = nn.Sequential(
+            nn.Conv1d(input_size, 128, 3, padding=1),
+            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Conv1d(128, 256, 3, padding=2, dilation=2),
             nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
         )
-        self.conv2 = nn.Sequential(
-            nn.Conv1d(256, 512, 5, padding=4, dilation=2),
-            nn.BatchNorm1d(512), nn.ReLU(), nn.Dropout(0.3)
-        )
-        self.conv3 = nn.Sequential(
-            nn.Conv1d(512, emb_dim, 5, padding=8, dilation=4),
-            nn.BatchNorm1d(emb_dim), nn.ReLU(), nn.Dropout(0.3)
+
+        self.mid_branch = nn.Sequential(
+            nn.Conv1d(input_size, 128, 5, padding=2),
+            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Conv1d(128, 256, 5, padding=4, dilation=2),
+            nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
         )
 
+        self.global_branch = nn.Sequential(
+            nn.Conv1d(input_size, 128, 7, padding=3),
+            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Conv1d(128, 256, 7, padding=6, dilation=2),
+            nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
+        )
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(256 * 3, emb_dim, 1),
+            nn.BatchNorm1d(emb_dim), nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1)
+        )
+        
         self.arcface = ArcMarginProduct(emb_dim, num_classes)
 
     def forward(self, x, lengths=None, labels=None, return_embedding=False):
-        x = x.permute(0, 2, 1)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = x.permute(0, 2, 1)
-
-        if lengths is not None:
-            mask = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
-            x = (x * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
-        else:
-            x = x.mean(1)
-
+        x = x.permute(0, 2, 1)  # (batch, features, time)
+        
+        local_feat = self.local_branch(x)
+        mid_feat = self.mid_branch(x)
+        global_feat = self.global_branch(x)
+        
+        combined = torch.cat([local_feat, mid_feat, global_feat], dim=1)
+        
+        x = self.fusion(combined).squeeze(-1)
+        
         if return_embedding:
             return x
-
+        
         return self.arcface(x, labels)
 
 # ----------------------- Обучение -----------------------
@@ -288,7 +376,7 @@ def train_one_epoch(model, loader, criterion, supcon, optimizer, device):
             emb = model(X, lengths, return_embedding=True)
             logits = model(X, lengths, labels=y)
 
-            loss = criterion(logits, y) + 0.2 * supcon(emb, y)
+            loss = criterion(logits, y) + 1 * supcon(emb, y)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -318,14 +406,117 @@ def eval_one_epoch(model, loader, criterion, device):
 
     return total_loss / len(loader), correct / total
 
+# ---------------------- Анализ ----------------------
+def analyze_embeddings(model, loader, device, label_names):
+        model.eval()
+        embeddings = []
+        labels = []
+        with torch.no_grad():
+            for X, lengths, y in loader:
+                X, lengths = X.to(device), lengths.to(device)
+                emb = model(X, lengths, return_embedding=True)
+                embeddings.append(emb.cpu().numpy())
+                labels.extend(y.numpy())
+        embeddings = np.vstack(embeddings)
+        labels = np.array(labels)
+
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+
+        unique_labels = np.unique(labels)
+        centroids = []
+        for lbl in unique_labels:
+            mask = labels == lbl
+            centroids.append(embeddings[mask].mean(axis=0))
+        centroids = np.array(centroids)
+
+        intra_dists = []
+        for i, lbl in enumerate(unique_labels):
+            mask = labels == lbl
+            class_emb = embeddings[mask]
+            dists = np.linalg.norm(class_emb - centroids[i], axis=1)
+            intra_dists.append(dists.mean())
+            print(f"Class {label_names[lbl]} ({lbl}): intra-class distance = {intra_dists[-1]:.4f}")
+
+        inter_dists = []
+        for i in range(len(unique_labels)):
+            for j in range(i+1, len(unique_labels)):
+                dist = np.linalg.norm(centroids[i] - centroids[j])
+                inter_dists.append(dist)
+        print(f"\nMean inter-class distance: {np.mean(inter_dists):.4f}")
+        print(f"Min inter-class distance: {np.min(inter_dists):.4f} (closest classes)")
+
+        min_dist = np.inf
+        min_pair = None
+        for i in range(len(unique_labels)):
+            for j in range(i+1, len(unique_labels)):
+                dist = np.linalg.norm(centroids[i] - centroids[j])
+                if dist < min_dist:
+                    min_dist = dist
+                    min_pair = (i, j)
+        if min_pair:
+            print(f"Closest classes: {label_names[min_pair[0]]} ({min_pair[0]}) and {label_names[min_pair[1]]} ({min_pair[1]}) with distance {min_dist:.4f}")
+
+def analyze_errors(model, loader, device, label_names):
+        model.eval()
+        all_preds = []
+        all_true = []
+        all_indices = []  
+
+        with torch.no_grad():
+            for X, lengths, y in loader:
+                X, lengths, y = X.to(device), lengths.to(device), y.to(device)
+                outputs = model(X, lengths)
+                preds = outputs.argmax(dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_true.extend(y.cpu().numpy())
+
+        all_preds = np.array(all_preds)
+        all_true = np.array(all_true)
+
+        print("\n" + "="*60)
+        print("PER-CLASS PERFORMANCE")
+        print("="*60)
+        report = classification_report(all_true, all_preds, target_names=label_names, digits=4)
+        print(report)
+
+        cm = confusion_matrix(all_true, all_preds)
+        print("\nConfusion Matrix (rows=true, cols=predicted):")
+        header = "     " + " ".join([f"{i:4d}" for i in range(len(label_names))])
+        print(header)
+        for i, row in enumerate(cm):
+            row_str = f"{i:3d} " + " ".join([f"{val:4d}" for val in row])
+            print(row_str)
+
+        print("\nTop-5 most confused pairs (true -> pred):")
+        errors = (all_true != all_preds)
+        if errors.sum() > 0:
+            error_pairs = list(zip(all_true[errors], all_preds[errors]))
+            from collections import Counter
+            pair_counts = Counter(error_pairs).most_common(5)
+            for (true, pred), cnt in pair_counts:
+                print(f"  {label_names[true]} ({true}) -> {label_names[pred]} ({pred}): {cnt} times")
+        else:
+            print("  No errors found!")
+
+        print("\nSample misclassifications (true -> pred):")
+        error_indices = np.where(errors)[0]
+        if len(error_indices) > 0:
+            sample_indices = np.random.choice(error_indices, size=min(10, len(error_indices)), replace=False)
+            for idx in sample_indices:
+                print(f"  Sample {idx}: true={label_names[all_true[idx]]} ({all_true[idx]}), pred={label_names[all_preds[idx]]} ({all_preds[idx]})")
+        else:
+            print("  No misclassifications.")
+
+        return all_true, all_preds
+
 # ----------------------- Main -----------------------
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-ds", "--dataSet", default="Datasets/CreatedDS/")
     parser.add_argument("-e", "--epochs", type=int, default=500)
-    parser.add_argument("-bs", "--batchSize", type=int, default=64)
+    parser.add_argument("-bs", "--batchSize", type=int, default=32)
     parser.add_argument("-o", "--out", type=str, default="Models/model.pth")
-    parser.add_argument("--max_len", type=int, default=14)
+    parser.add_argument("--max_len", type=int, default=16)
     parser.add_argument("--early_stop", type=int, default=50)
     parser.add_argument("--use_knn", action="store_true")
     args = parser.parse_args()
@@ -443,6 +634,14 @@ def main():
     knn.fit(all_embeddings, all_labels)
     knn_acc = knn.score(all_embeddings, all_labels)
     print(f"KNN accuracy on validation embeddings: {knn_acc:.4f}")
+
+    print("\n" + "="*60)
+    print("Starting detailed error analysis...")
+    true_labels, pred_labels = analyze_errors(model, val_loader, device, train_set.labels)
+
+    print("\n" + "="*60)
+    print("EMBEDDING SPACE ANALYSIS")
+    analyze_embeddings(model, val_loader, device, train_set.labels)
 
 if __name__ == "__main__":
     main()

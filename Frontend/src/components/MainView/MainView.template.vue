@@ -136,12 +136,12 @@ defineProps({
                   :key="i"
                   class="gesture-word"
                   :class="{ 
-                    latest: i === ((gestureHistory.value?.length ?? 0) - 1),
-                    phrase: g.includes(' ')
+                    latest: i === ((gestureHistory.value?.length ?? 0) - 1), 
+                    phrase: g && typeof g === 'string' && g.includes(' ') 
                   }"
                   @click="deleteGesture(g, i)"
                 >
-                  {{ g }}
+                  {{ g || '?' }}
                 </span>
               
                 <div

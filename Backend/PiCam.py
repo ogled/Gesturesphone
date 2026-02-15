@@ -40,6 +40,8 @@ MIN_CONFIDENNCE = 90
 
 fps = 0
 
+prev_coords = None
+prev_velocity = None
 stopThreads = False
 out = None
 cap = None
@@ -88,49 +90,57 @@ class ArcMarginProduct(nn.Module):
         return logits * self.s
 
 
-class SimpleTCN(nn.Module):
-    def __init__(self, input_size, num_classes, emb_dim=256):
+class Model(nn.Module):
+    def __init__(self, input_size, num_classes, emb_dim=512):
         super().__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(input_size, 256, 5, padding=2),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3)
+
+        self.local_branch = nn.Sequential(
+            nn.Conv1d(input_size, 128, 3, padding=1),
+            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Conv1d(128, 256, 3, padding=2, dilation=2),
+            nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
         )
-        self.conv2 = nn.Sequential(
-            nn.Conv1d(256, 512, 5, padding=4, dilation=2),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(0.3)
+
+        self.mid_branch = nn.Sequential(
+            nn.Conv1d(input_size, 128, 5, padding=2),
+            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Conv1d(128, 256, 5, padding=4, dilation=2),
+            nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
         )
-        self.conv3 = nn.Sequential(
-            nn.Conv1d(512, emb_dim, 5, padding=8, dilation=4),
-            nn.BatchNorm1d(emb_dim),
-            nn.ReLU(),
-            nn.Dropout(0.3)
+
+        self.global_branch = nn.Sequential(
+            nn.Conv1d(input_size, 128, 7, padding=3),
+            nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Conv1d(128, 256, 7, padding=6, dilation=2),
+            nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
         )
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(256 * 3, emb_dim, 1),
+            nn.BatchNorm1d(emb_dim), nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1)
+        )
+        
         self.arcface = ArcMarginProduct(emb_dim, num_classes)
 
     def forward(self, x, lengths=None, labels=None, return_embedding=False):
-        x = x.permute(0, 2, 1)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = x.permute(0, 2, 1)
-
-        if lengths is not None:
-            mask = torch.arange(x.size(1), device=x.device)[None, :] < lengths[:, None]
-            x = (x * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
-        else:
-            x = x.mean(1)
-
+        x = x.permute(0, 2, 1)  # (batch, features, time)
+        
+        local_feat = self.local_branch(x)
+        mid_feat = self.mid_branch(x)
+        global_feat = self.global_branch(x)
+        
+        combined = torch.cat([local_feat, mid_feat, global_feat], dim=1)
+        
+        x = self.fusion(combined).squeeze(-1)
+        
         if return_embedding:
             return x
-
+        
         return self.arcface(x, labels)
 
 def create_feature_vector(multi_hand_landmarks, multi_handedness):
-    global prev_coords, prev_velocity, prev_coords, prev_velocity
+    global prev_coords, prev_velocity
 
     hands = np.zeros((2, 21, 3), dtype=np.float32)
 
@@ -138,115 +148,96 @@ def create_feature_vector(multi_hand_landmarks, multi_handedness):
         for lm, hd in zip(multi_hand_landmarks, multi_handedness):
             idx = 0 if hd.classification[0].label == "Left" else 1
             coords = np.array([[p.x, p.y, p.z] for p in lm.landmark], dtype=np.float32)
-            wrist = coords[0:1]
-            coords = coords - wrist
-            palm = coords[9]
-            scale = np.linalg.norm(palm) + 1e-6
-            hands[idx] = coords / scale
+            hands[idx] = coords
 
-    left, right = hands[0], hands[1]
-    coords = np.concatenate([left, right], axis=0).reshape(1, -1)  # 126
+    left_raw = hands[0]
+    right_raw = hands[1]
 
-    # Скорость
+    def norm_hand(J):
+        wrist = J[0:1] 
+        Jc = J - wrist
+        palm = Jc[9] 
+        scale = np.linalg.norm(palm) + 1e-6
+        return Jc / scale
+
+    left = norm_hand(left_raw)
+    right = norm_hand(right_raw)
+
+    coords = np.concatenate([left.ravel(), right.ravel()])
+
     if prev_coords is None:
         velocity = np.zeros_like(coords)
+        acceleration = np.zeros_like(coords)
     else:
         velocity = coords - prev_coords
-
-    # Ускорение
-    if prev_velocity is None:
-        acceleration = np.zeros_like(velocity)
-    else:
-        acceleration = velocity - prev_velocity
+        if prev_velocity is None:
+            acceleration = np.zeros_like(coords)
+        else:
+            acceleration = velocity - prev_velocity
 
     prev_coords = coords.copy()
     prev_velocity = velocity.copy()
 
-    # Енергичность
-    motion_energy = np.linalg.norm(velocity, axis=1, keepdims=True)
+    motion_energy = np.linalg.norm(velocity) 
+    motion_energy = np.array([[motion_energy]], dtype=np.float32)
 
-    # Наличие рук
-    hands_present = (
-        (np.abs(left).sum() > 0) + (np.abs(right).sum() > 0)
-    ) / 2.0
-    hands_count = np.array([[hands_present]], dtype=np.float32)
+    left_present = float(np.abs(left).sum() > 0)
+    right_present = float(np.abs(right).sum() > 0)
+    hands_count = np.array([[(left_present + right_present) / 2.0]], dtype=np.float32)
 
-    # Растояние между ладонями
-    inter_hand_dist = np.linalg.norm(left[0] - right[0], keepdims=True).reshape(1, 1)
+    inter_hand_dist = np.linalg.norm(left[0] - right[0]).reshape(1,1)
 
-    def calculate_polygon_area(points):
+    def polygon_area(points):
         x = points[:, 0]
         y = points[:, 1]
         x_shift = np.roll(x, -1)
         y_shift = np.roll(y, -1)
-        area = 0.5 * np.abs(np.sum(x * y_shift) - np.sum(y * x_shift))
-        return area
+        return 0.5 * np.abs(np.sum(x * y_shift) - np.sum(y * x_shift))
 
-    # Занимаимая площадь ладони
     palm_points = [0, 1, 5, 9, 13, 17]
-    left_area = calculate_polygon_area(left[palm_points, :2])
-    right_area = calculate_polygon_area(right[palm_points, :2])
+    left_area = np.array([[polygon_area(left[palm_points, :2])]], dtype=np.float32)
+    right_area = np.array([[polygon_area(right[palm_points, :2])]], dtype=np.float32)
 
-    left_area = np.array([[left_area]])
-    right_area = np.array([[right_area]])
+    key_pairs = [(0,4),(0,8),(0,12),(0,16),(0,20),
+                 (4,8),(8,12),(12,16),(16,20)]
+    def compute_dists(J):
+        return np.array([np.linalg.norm(J[i] - J[j]) for i, j in key_pairs]).reshape(1,-1)
 
-    # Растояния между точками
-    key_pairs = [(0, 4), (0, 8), (0, 12), (0, 16), (0, 20),
-                 (4, 8), (8, 12), (12, 16), (16, 20)]
+    left_dists = compute_dists(left)   
+    right_dists = compute_dists(right) 
 
-    def compute_distances(J):
-        dists = []
-        for i, j in key_pairs:
-            dists.append(np.linalg.norm(J[i] - J[j]))
-        return np.array(dists).reshape(1, -1)
+    spread_left = np.linalg.norm(left[4] - left[20]).reshape(1,1)
+    spread_right = np.linalg.norm(right[4] - right[20]).reshape(1,1)
 
-    left_dists = compute_distances(left)
-    right_dists = compute_distances(right)
-
-    # Растояние между кончиками пальцев
-    spread_left = np.linalg.norm(left[4] - left[20])
-    spread_right = np.linalg.norm(right[4] - right[20])
-
-    spread_left = np.array([[spread_left]])
-    spread_right = np.array([[spread_right]])
-
-    # Изгиб траектории
-    vel_norm = velocity / (np.linalg.norm(velocity) + 1e-6)
-
-    if prev_velocity is None:
-        curvature = np.zeros((1, 1), dtype=np.float32)
+    if prev_velocity is None or np.linalg.norm(velocity) == 0:
+        curvature = np.zeros((1,1), dtype=np.float32)
     else:
+        vel_norm = velocity / (np.linalg.norm(velocity) + 1e-6)
         prev_norm = prev_velocity / (np.linalg.norm(prev_velocity) + 1e-6)
-        curvature = np.linalg.norm(vel_norm - prev_norm)
-        curvature = np.array([[curvature]])
+        curvature = np.linalg.norm(vel_norm - prev_norm).reshape(1,1)
 
-    palm_vec = left[9] - left[0]
-    palm_dir_left = palm_vec / (np.linalg.norm(palm_vec) + 1e-6)
+    palm_vec_left = left[9] - left[0]
+    palm_dir_left = (palm_vec_left / (np.linalg.norm(palm_vec_left) + 1e-6)).reshape(1,3)
+    palm_vec_right = right[9] - right[0]
+    palm_dir_right = (palm_vec_right / (np.linalg.norm(palm_vec_right) + 1e-6)).reshape(1,3)
 
-    palm_vec = right[9] - right[0]
-    palm_dir_right = palm_vec / (np.linalg.norm(palm_vec) + 1e-6)
-
-    palm_dir_left = palm_dir_left.reshape(1, 3)
-    palm_dir_right = palm_dir_right.reshape(1, 3)
-
-    feats = np.concatenate(
-        [hands_count,
-         coords,
-         velocity,
-         acceleration,
-         motion_energy,
-         left_area,
-         right_area,
-         inter_hand_dist,
-         left_dists,
-         right_dists,
-         spread_left,
-         spread_right,
-         curvature,
-         palm_dir_left,
-         palm_dir_right],
-        axis=1
-    )
+    feats = np.concatenate([
+        hands_count,        
+        coords.reshape(1,-1),
+        velocity.reshape(1,-1), 
+        acceleration.reshape(1,-1), 
+        motion_energy,       
+        left_area,           
+        right_area,          
+        inter_hand_dist,     
+        left_dists,          
+        right_dists,         
+        spread_left,         
+        spread_right,        
+        curvature,           
+        palm_dir_left,       
+        palm_dir_right       
+    ], axis=1)
 
     return torch.tensor(feats, dtype=torch.float32)
 
@@ -265,13 +256,14 @@ def get_text(gesture_history):
 
 def process_thread():
     global latest_frame, processed_frame
+    global prev_coords, prev_velocity 
+    prev_coords = None
+    prev_velocity = None
+
     gesture_name = ""
     confidence = 0.0
     all_probabilities = []
 
-    dims = 3
-    num_landmarks = 21
-    expected_raw_features = num_landmarks * dims * 2
     frame_id = 0
     while not stopThreads:
         with lock:
@@ -287,16 +279,19 @@ def process_thread():
         if frame_id % 2 == 0:
             results = hands.process(rgb_frame) 
         frame_id += 1
+
         if not results.multi_hand_landmarks:
-            # feature_buffer.clear()
+            prev_coords = None
+            prev_velocity = None
+            feature_buffer.clear()
             gesture_name = ""
             confidence = 0.0
         else:
-            features = create_feature_vector(
+            feat_tensor = create_feature_vector(
                 results.multi_hand_landmarks,
                 results.multi_handedness
             )
-            feature_buffer.append(features.squeeze(0).cpu().numpy())
+            feature_buffer.append(feat_tensor.squeeze(0).cpu().numpy())
 
             for hand in results.multi_hand_landmarks:
                 mp_drawing.draw_landmarks(
@@ -307,11 +302,17 @@ def process_thread():
                     mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2)
                 )
 
-            # Предсказание
             if len(feature_buffer) >= sequence_length:
                 current_sequence = list(feature_buffer)[-sequence_length:]
-                seq_feats = np.stack(current_sequence, axis=0)  # [seq_len, 126]
-                sequence_tensor = torch.tensor(seq_feats, dtype=torch.float32).unsqueeze(0).to(device)  # [1, seq_len, 126]
+                seq_feats = np.stack(current_sequence, axis=0) 
+
+                raw_me = seq_feats[:, 379:380] 
+                mean = np.mean(raw_me)
+                std = np.std(raw_me) + 1e-6
+                norm_me = (raw_me - mean) / std
+                seq_feats[:, 379:380] = norm_me
+
+                sequence_tensor = torch.tensor(seq_feats, dtype=torch.float32).unsqueeze(0).to(device)
 
                 with torch.no_grad():
                     emb = model(sequence_tensor, return_embedding=True)
@@ -330,9 +331,11 @@ def process_thread():
                         confidence = best_conf
 
                     all_probabilities = probs_np.tolist()
+            else:
+                gesture_name = ""
+                confidence = 0.0
+                all_probabilities = []
 
-
-        # --- отрисовка ---
         latency = (time.time() - start_time) * 1000
         with lock:
             processed_frame = (display_frame, latency, gesture_name, confidence, all_probabilities)
@@ -437,9 +440,9 @@ def initialization():
     hands = mp_hands.Hands(
         max_num_hands=2, 
         model_complexity=0,
-        min_detection_confidence=0.5,
+        min_detection_confidence=0.3,
         static_image_mode=False,
-        min_tracking_confidence=0.25,
+        min_tracking_confidence=0.2
     )
 
     cap = cv2.VideoCapture(0)
@@ -474,7 +477,7 @@ def initialization():
     print(f"[INFO] input_size: {real_input_size}")
     print(f"[INFO] classes: {labels}")
     
-    model = SimpleTCN(real_input_size, num_classes).to(device)
+    model = Model(real_input_size, num_classes).to(device)
     model.load_state_dict(state["model_state_dict"])
     model.eval()
 
