@@ -1,9 +1,8 @@
 from contextlib import asynccontextmanager
 
-import AiTextCorecting
-import PiCam
-
 from . import state
+from .core import ai_text_correcting as AiTextCorecting
+from .core import picam as PiCam
 
 
 @asynccontextmanager

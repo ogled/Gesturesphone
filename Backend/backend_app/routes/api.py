@@ -1,12 +1,12 @@
 import time
 
 import cv2
-import PiCam
 import psutil
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import state
+from ..core import picam as PiCam
 from ..services.ai_tasks import run_ai_task, run_recording_ai_task
 
 router = APIRouter(prefix="/api")
