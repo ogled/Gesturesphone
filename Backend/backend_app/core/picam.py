@@ -329,10 +329,10 @@ def initialization():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         max_num_hands=2, 
-        model_complexity=0,
-        min_detection_confidence=0.3,
+        model_complexity=1,
+        min_detection_confidence=0.2,
         static_image_mode=False,
-        min_tracking_confidence=0.2
+        min_tracking_confidence=0.1
     )
 
     cap = cv2.VideoCapture(0)
