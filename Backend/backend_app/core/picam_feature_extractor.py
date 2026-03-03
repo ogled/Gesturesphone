@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 
+from .feature_contract import FEATURE_CONTRACT
+
 
 class FeatureExtractor:
     def __init__(self, smoothing_alpha=0.35):
@@ -137,7 +139,13 @@ class FeatureExtractor:
             axis=1,
         )
 
-        return feats.squeeze(0).astype(np.float32), smoothed
+        vector = feats.squeeze(0).astype(np.float32)
+        if vector.shape[0] != FEATURE_CONTRACT.feature_size:
+            raise ValueError(
+                f"Unexpected feature vector size {vector.shape[0]}, expected {FEATURE_CONTRACT.feature_size}"
+            )
+
+        return vector, smoothed
 
 
 def draw_smoothed_landmarks(frame, hands_coords, hand_connections):

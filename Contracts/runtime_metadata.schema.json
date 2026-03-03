@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gesturesphone.local/schemas/runtime_metadata.schema.json",
+  "title": "RuntimeMetadata",
+  "type": "object",
+  "required": [
+    "labels",
+    "num_classes",
+    "input_size",
+    "sequence_length",
+    "feature_contract_version"
+  ],
+  "properties": {
+    "labels": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "num_classes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "input_size": {
+      "type": "integer",
+      "const": 410
+    },
+    "sequence_length": {
+      "type": "integer",
+      "const": 14
+    },
+    "feature_contract_version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "source_checkpoint": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
+

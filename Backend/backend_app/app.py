@@ -5,14 +5,48 @@ from fastapi.staticfiles import StaticFiles
 from .lifespan import app_lifespan
 from .routes.api import router as api_router
 from pathlib import Path
+import sys
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+def _iter_runtime_roots():
+    module_path = Path(__file__).resolve()
+    yield module_path.parents[2]
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            yield Path(meipass)
+        exe_dir = Path(sys.executable).resolve().parent
+        yield exe_dir
+        yield exe_dir / "_internal"
+
+
+def _resolve_frontend_dist() -> Path:
+    checked = []
+    seen = set()
+    for root in _iter_runtime_roots():
+        root = root.resolve()
+        if root in seen:
+            continue
+        seen.add(root)
+        candidate = root / "Frontend" / "dist"
+        checked.append(str(candidate))
+        if candidate.exists():
+            return candidate
+
+    raise RuntimeError(
+        "Frontend dist directory was not found. Checked: " + "; ".join(checked)
+    )
+
+
+FRONTEND_DIST_DIR = _resolve_frontend_dist()
+ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
 
 app = FastAPI(lifespan=app_lifespan)
 
 app.mount(
     "/assets",
-    StaticFiles(directory=BASE_DIR / "Frontend" / "dist" / "assets"),
+    StaticFiles(directory=ASSETS_DIR),
     name="assets",
 )
 
@@ -21,4 +55,4 @@ app.include_router(api_router)
 
 @app.get("/")
 def index():
-    return FileResponse(BASE_DIR / "Frontend" / "dist" / "index.html")
+    return FileResponse(FRONTEND_DIST_DIR / "index.html")

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gesturesphone.local/schemas/feature_vector_v1.schema.json",
+  "title": "FeatureVectorV1",
+  "description": "Float32 feature vector produced by Backend/backend_app/core/picam_feature_extractor.py",
+  "type": "array",
+  "minItems": 410,
+  "maxItems": 410,
+  "items": {
+    "type": "number"
+  },
+  "x-version": "v1",
+  "x-dtype": "float32",
+  "x-layout": [
+    { "name": "hands_count", "start": 0, "length": 1 },
+    { "name": "coords", "start": 1, "length": 126 },
+    { "name": "velocity", "start": 127, "length": 126 },
+    { "name": "acceleration", "start": 253, "length": 126 },
+    { "name": "motion_energy", "start": 379, "length": 1 },
+    { "name": "left_area", "start": 380, "length": 1 },
+    { "name": "right_area", "start": 381, "length": 1 },
+    { "name": "inter_hand_dist", "start": 382, "length": 1 },
+    { "name": "left_dists", "start": 383, "length": 9 },
+    { "name": "right_dists", "start": 392, "length": 9 },
+    { "name": "spread_left", "start": 401, "length": 1 },
+    { "name": "spread_right", "start": 402, "length": 1 },
+    { "name": "curvature", "start": 403, "length": 1 },
+    { "name": "palm_dir_left", "start": 404, "length": 3 },
+    { "name": "palm_dir_right", "start": 407, "length": 3 }
+  ]
+}
+

@@ -7,6 +7,6 @@ from .core import picam as PiCam
 
 @asynccontextmanager
 async def app_lifespan(app):
-    PiCam.initialization()
+    await PiCam.initialization()
     state.giga = AiTextCorecting.initialization()
     yield

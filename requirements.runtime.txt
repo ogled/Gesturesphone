@@ -1,0 +1,11 @@
+numpy==1.24.3
+protobuf>=3.20.2,<4
+psutil
+Pillow
+mediapipe==0.10.9
+opencv-python-headless
+fastapi
+uvicorn
+gigachat
+requests
+onnxruntime
