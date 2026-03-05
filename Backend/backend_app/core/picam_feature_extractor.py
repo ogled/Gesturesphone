@@ -5,36 +5,13 @@ from .feature_contract import FEATURE_CONTRACT
 
 
 class FeatureExtractor:
-    def __init__(self, smoothing_alpha=0.35):
-        self.smoothing_alpha = smoothing_alpha
+    def __init__(self):
         self.prev_coords = None
         self.prev_velocity = None
-        self.smoothed_hands = np.zeros((2, 21, 3), dtype=np.float32)
-        self.hand_seen = np.zeros(2, dtype=np.bool_)
 
     def reset(self):
         self.prev_coords = None
         self.prev_velocity = None
-        self.smoothed_hands.fill(0)
-        self.hand_seen[:] = False
-
-    def _smooth_hand_landmarks(self, raw_hands):
-        for idx in range(2):
-            is_present = float(np.abs(raw_hands[idx]).sum()) > 0
-            if is_present:
-                if self.hand_seen[idx]:
-                    self.smoothed_hands[idx] = (
-                        self.smoothing_alpha * raw_hands[idx]
-                        + (1.0 - self.smoothing_alpha) * self.smoothed_hands[idx]
-                    )
-                else:
-                    self.smoothed_hands[idx] = raw_hands[idx]
-                self.hand_seen[idx] = True
-            else:
-                self.hand_seen[idx] = False
-                self.smoothed_hands[idx] = 0.0
-
-        return self.smoothed_hands.copy()
 
     def create_feature_vector(self, multi_hand_landmarks, multi_handedness):
         hands = np.zeros((2, 21, 3), dtype=np.float32)
@@ -45,10 +22,8 @@ class FeatureExtractor:
                 coords = np.array([[p.x, p.y, p.z] for p in lm.landmark], dtype=np.float32)
                 hands[idx] = coords
 
-        smoothed = self._smooth_hand_landmarks(hands)
-
-        left_raw = smoothed[0]
-        right_raw = smoothed[1]
+        left_raw = hands[0]
+        right_raw = hands[1]
 
         def norm_hand(hand):
             wrist = hand[0:1]
@@ -145,10 +120,10 @@ class FeatureExtractor:
                 f"Unexpected feature vector size {vector.shape[0]}, expected {FEATURE_CONTRACT.feature_size}"
             )
 
-        return vector, smoothed
+        return vector, hands.copy()
 
 
-def draw_smoothed_landmarks(frame, hands_coords, hand_connections):
+def draw_landmarks(frame, hands_coords, hand_connections):
     for hand_coords in hands_coords:
         if np.abs(hand_coords).sum() == 0:
             continue
@@ -158,7 +133,9 @@ def draw_smoothed_landmarks(frame, hands_coords, hand_connections):
             x = int(point[0] * frame.shape[1])
             y = int(point[1] * frame.shape[0])
             points.append((x, y))
-            cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)
 
         for start_idx, end_idx in hand_connections:
             cv2.line(frame, points[start_idx], points[end_idx], (0, 0, 255), 2)
+
+        for (x, y) in points:
+            cv2.circle(frame, (x, y), 6, (0, 255, 0), -1)

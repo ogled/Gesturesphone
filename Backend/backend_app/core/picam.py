@@ -16,7 +16,7 @@ from .classifier_runtime import (
     load_runtime_metadata,
 )
 from .feature_contract import FEATURE_CONTRACT
-from .picam_feature_extractor import FeatureExtractor, draw_smoothed_landmarks
+from .picam_feature_extractor import FeatureExtractor, draw_landmarks
 
 
 def _iter_runtime_roots():
@@ -70,7 +70,6 @@ CAPTURE_FPS = 60
 CAPTURE_INTERVAL = 1.0 / CAPTURE_FPS
 DISPLAY_FPS = 60
 DISPLAY_INTERVAL = 1.0 / DISPLAY_FPS
-LANDMARK_SMOOTHING_ALPHA = 0.2
 
 fps = 0
 stopThreads = False
@@ -189,12 +188,12 @@ def process_thread():
             confidence = 0.0
             all_probabilities = []
         else:
-            feat_vector, smoothed_coords = feature_extractor.create_feature_vector(
+            feat_vector, hand_coords = feature_extractor.create_feature_vector(
                 results.multi_hand_landmarks, results.multi_handedness
             )
             feature_buffer.append(feat_vector)
-            draw_smoothed_landmarks(
-                display_frame, smoothed_coords, mp_hands.HAND_CONNECTIONS
+            draw_landmarks(
+                display_frame, hand_coords, mp_hands.HAND_CONNECTIONS
             )
 
             if len(feature_buffer) >= sequence_length:
@@ -333,7 +332,7 @@ async def initialization():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         max_num_hands=2,
-        model_complexity=1,
+        model_complexity=0,
         min_detection_confidence=0.2,
         static_image_mode=False,
         min_tracking_confidence=0.1,
@@ -372,7 +371,7 @@ async def initialization():
     print(f"[INFO] classes: {labels}")
 
     feature_buffer = deque(maxlen=sequence_length)
-    feature_extractor = FeatureExtractor(smoothing_alpha=LANDMARK_SMOOTHING_ALPHA)
+    feature_extractor = FeatureExtractor()
     lock = threading.Lock()
     new_frame_ready = threading.Event()
 
