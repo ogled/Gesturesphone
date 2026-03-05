@@ -9,3 +9,4 @@ uvicorn
 gigachat
 requests
 onnxruntime
+pywebview
