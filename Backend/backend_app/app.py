@@ -56,3 +56,13 @@ app.include_router(api_router)
 @app.get("/")
 def index():
     return FileResponse(FRONTEND_DIST_DIR / "index.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    return FileResponse(FRONTEND_DIST_DIR / "favicon.ico")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon_svg():
+    return FileResponse(FRONTEND_DIST_DIR / "favicon.svg")

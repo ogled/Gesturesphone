@@ -55,8 +55,8 @@ CONF_THRESHOLD = 0.4
 MIN_HOLD_TIME = 0.6
 MIN_SHOW_TIME = 0.5
 
-hCam = 640
-wCam = 480
+hCam = 1280
+wCam = 720
 sequence_length = FEATURE_CONTRACT.sequence_length
 save_video = False
 latest_web_frame = None
@@ -109,6 +109,7 @@ def _build_classifier_runtime() -> ClassifierRuntime:
 
     if not onnx_path.exists() or not metadata_path.exists():
         if checkpoint_path.exists():
+            backend = "torch"
             print("[WARN] ONNX artifacts were not found, falling back to torch backend.")
             print("[WARN] Export model first with: python Train/export_to_onnx.py")
             return TorchClassifierRuntime(checkpoint_path)
@@ -332,7 +333,7 @@ async def initialization():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         max_num_hands=2,
-        model_complexity=0,
+        model_complexity=1,
         min_detection_confidence=0.2,
         static_image_mode=False,
         min_tracking_confidence=0.1,

@@ -1,4 +1,7 @@
 import time
+import json
+import os
+from pathlib import Path
 
 import cv2
 import psutil
@@ -7,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import state
 from ..core import picam as PiCam
+from ..core.feature_contract import FEATURE_CONTRACT
 from ..services.ai_tasks import run_ai_task, run_recording_ai_task
 
 router = APIRouter(prefix="/api")
@@ -28,6 +32,45 @@ def gen_frames():
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
         )
+
+
+def _camera_status() -> str:
+    cap = getattr(PiCam, "cap", None)
+    if cap is None:
+        return "unavailable"
+    is_opened = getattr(cap, "isOpened", None)
+    if callable(is_opened) and is_opened():
+        return "ready"
+    return "unavailable"
+
+
+def _model_status() -> str:
+    return "ready" if getattr(PiCam, "classifier_runtime", None) is not None else "error"
+
+
+def _runtime_backend_name() -> str:
+    runtime = getattr(PiCam, "classifier_runtime", None)
+    if runtime is not None:
+        class_name = runtime.__class__.__name__.lower()
+        if "torch" in class_name:
+            return "torch"
+        if "onnx" in class_name:
+            return "onnx"
+
+    backend = os.getenv("GESTURE_RUNTIME_BACKEND", "onnx").strip().lower()
+    if backend in {"onnx", "torch"}:
+        return backend
+    return "onnx"
+
+
+def _resolve_model_version() -> str:
+    metadata_path = getattr(PiCam, "TRAIN_DIR", Path(".")) / "model.runtime.json"
+
+    try:
+        payload = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+        return payload.get("model_version", "unknown")
+    except Exception:
+        return "unknown"
 
 
 @router.get("/gestures")
@@ -55,6 +98,34 @@ def cpu_usage_val():
             "CPU": str(round(psutil.cpu_percent(interval=0))),
             "RAM": str(round(psutil.virtual_memory().percent)),
             "FPS": str(round(PiCam.fps)),
+        }
+    )
+
+
+@router.get("/health")
+def health():
+    camera = _camera_status()
+    model = _model_status()
+    ai = "ready" if state.giga is not None else "not_ready"
+    status = "ok" if camera == "ready" and model == "ready" and ai == "ready" else "degraded"
+    return JSONResponse(
+        {
+            "status": status,
+            "camera": camera,
+            "model": model,
+            "ai": ai,
+            "runtime_backend": _runtime_backend_name(),
+        }
+    )
+
+
+@router.get("/version")
+def version():
+    return JSONResponse(
+        {
+            "app_version": state.ProgramVersion,
+            "model_version": _resolve_model_version(),
+            "feature_contract_version": FEATURE_CONTRACT.version,
         }
     )
 

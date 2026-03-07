@@ -124,18 +124,33 @@ class FeatureExtractor:
 
 
 def draw_landmarks(frame, hands_coords, hand_connections):
+    h, w = frame.shape[:2]
+
     for hand_coords in hands_coords:
         if np.abs(hand_coords).sum() == 0:
             continue
 
         points = []
-        for point in hand_coords:
-            x = int(point[0] * frame.shape[1])
-            y = int(point[1] * frame.shape[0])
+        for p in hand_coords:
+            x = int(p[0] * w)
+            y = int(p[1] * h)
             points.append((x, y))
 
+        wrist = np.array(points[0])
+        middle = np.array(points[9])
+        hand_size = np.linalg.norm(wrist - middle)
+
+        radius = max(2, int(hand_size * 0.08))
+        thickness = max(1, int(hand_size * 0.05))
+
         for start_idx, end_idx in hand_connections:
-            cv2.line(frame, points[start_idx], points[end_idx], (0, 0, 255), 2)
+            cv2.line(
+                frame,
+                points[start_idx],
+                points[end_idx],
+                (0, 0, 255),
+                thickness
+            )
 
         for (x, y) in points:
-            cv2.circle(frame, (x, y), 6, (0, 255, 0), -1)
+            cv2.circle(frame, (x, y), radius, (0, 255, 0), -1)

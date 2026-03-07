@@ -24,6 +24,7 @@ if (-not (Test-Path ".\Train\model.runtime.json")) {
   --clean `
   --onedir `
   --name $AppName `
+  --icon='.\Frontend\public\favicon.ico' `
   --collect-all mediapipe `
   --paths ".\Backend" `
   --exclude-module torch `

@@ -6,6 +6,7 @@ giga = None
 text_from_ai = ""
 ai_busy = False
 temp_gestures_history = deque(maxlen=20)
+ProgramVersion = "1.0.0"
 
 clients = set()
 state = {

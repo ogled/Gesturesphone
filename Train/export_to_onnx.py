@@ -51,6 +51,7 @@ def main():
     )
 
     metadata = {
+        "model_version": f"rsl_v1_seq{int(args.sequence_length)}_f{int(state['input_size'])}_c{int(state['num_classes'])}",
         "labels": list(state["labels"]),
         "num_classes": int(state["num_classes"]),
         "input_size": int(state["input_size"]),

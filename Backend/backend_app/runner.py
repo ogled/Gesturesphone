@@ -1,8 +1,10 @@
 import threading
-import time
+import os
 
-import requests
 import uvicorn
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("GLOG_minloglevel", "2")
 
 from . import state
 from .app import app
@@ -11,25 +13,24 @@ from .utils.browser import open_in_browser
 
 def run():
     def start_server():
-        uvicorn.run(app, host=state.host, port=state.port, reload=False)
+        uvicorn.run(
+            app,
+            host=state.host,
+            port=state.port,
+            reload=False,
+            log_level="warning",
+            access_log=False,
+        )
 
     server_thread = threading.Thread(target=start_server)
     server_thread.start()
 
     probe_host = "127.0.0.1" if state.host == "0.0.0.0" else state.host
 
-    server_up = False
-    while not server_up:
-        try:
-            resp = requests.get(
-                f"http://{probe_host}:{state.port}/api/getUsageVals", timeout=0.5
-            )
-            if resp.status_code == 200:
-                server_up = True
-        except requests.exceptions.RequestException:
-            time.sleep(0.2)
-
-    open_in_browser(f"http://{probe_host}:{state.port}")
+    open_in_browser(
+        url=f"http://{probe_host}:{state.port}",
+        probe_url=f"http://{probe_host}:{state.port}/api/health",
+    )
 
     try:
         server_thread.join()
