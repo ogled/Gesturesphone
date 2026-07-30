@@ -48,10 +48,14 @@ set GESTURE_RUNTIME_BACKEND=torch
 2. Подготовить датасет:
 
 ```bash
-python Train/Datasets/createDataSet.py --input "C:\SlovoDS"
+python Train/Datasets/createDataSet.py --input "C:\SlovoDS" --taskModel "C:\models\hand_landmarker.task"
 ```
 > [!TIP]
 > Вы можете отредактировать файл `AllowedGestures.csv`, добавив жесты, которые требуются.
+
+`createDataSet.py` использует MediaPipe Tasks `HandLandmarker`. Скачайте модель
+`hand_landmarker.task` из официальных моделей MediaPipe и передайте путь через
+`--taskModel`, либо положите файл рядом с `Train/Datasets/createDataSet.py`.
 
 3. Обучить:
 

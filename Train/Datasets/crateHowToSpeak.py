@@ -2,7 +2,6 @@ import os
 import csv
 import shutil
 from pathlib import Path
-# ПУТИ
 
 os.chdir(Path(__file__).resolve().parent)
 

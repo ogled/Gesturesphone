@@ -13,32 +13,106 @@ import tqdm
 os.chdir(Path(__file__).resolve().parent)
 
 # ======================================================
-# Video → Torch Tensor [T, 2, 21, 3]
+# Video → Torch Tensor [T, 2 - [2, 21, 3]  hands
+#                          | - [24, 3]  pose
 # ======================================================
 
-def process_video(video_path: str, output_pt: str, target_fps: int):
+POSE_UPPER_BODY_INDICES = list(range(0, 24))
+
+def create_hand_landmarker(hand_landmarker_path: str):
+    base = mp.tasks.BaseOptions(model_asset_path=hand_landmarker_path)
+    return mp.tasks.vision.HandLandmarker.create_from_options(
+        mp.tasks.vision.HandLandmarkerOptions(
+            base_options=base,
+            running_mode=mp.tasks.vision.RunningMode.VIDEO,
+            num_hands=2,
+            min_hand_detection_confidence=0.6,
+            min_hand_presence_confidence=0.4,
+            min_tracking_confidence=0.4
+        )
+    )
+
+def create_pose_landmarker(pose_landmarker_path: str):
+    base = mp.tasks.BaseOptions(model_asset_path=pose_landmarker_path)
+    return mp.tasks.vision.PoseLandmarker.create_from_options(
+        mp.tasks.vision.PoseLandmarkerOptions(
+            base_options=base,
+            running_mode=mp.tasks.vision.RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=0.6,
+            min_pose_presence_confidence=0.4,
+            min_tracking_confidence=0.4
+        )
+    )
+
+def norm_hand(hand):
+    if np.sum(np.abs(hand)) < 1e-6:
+        return hand
+
+    wrist = hand[0]
+    hand = hand - wrist
+
+    scale = np.linalg.norm(hand[9])
+    scale = max(scale, 1e-6)
+
+    return hand / scale
+
+
+def norm_hands(hands):
+    return np.stack([
+        norm_hand(hands[0]),
+        norm_hand(hands[1])
+    ])
+
+
+def norm_pose(pose):
+    xyz = pose[:, :3]
+    vis = pose[:, 3:4]
+
+    center = (xyz[11] + xyz[12]) / 2
+    xyz = xyz - center
+
+    scale = np.linalg.norm(xyz[11] - xyz[12])
+    scale = max(scale, 1e-6)
+
+    xyz = xyz / scale
+
+    return np.concatenate([
+        xyz,
+        vis
+    ], axis=1)
+
+
+def normalize_frame(hands, pose):
+    hands = norm_hands(hands)
+    pose = norm_pose(pose)
+
+    return np.concatenate([
+        hands.flatten(),
+        pose.flatten()
+    ]).astype(np.float32)
+
+def process_video(video_path: str, output_pt: str, hand_landmarker_path: str, pose_landmarker_path: str, target_fps: int):
     try:
-        mp_hands = mp.solutions.hands
-
+        hand_landmarker = create_hand_landmarker(hand_landmarker_path)
+        pose_landmarker = create_pose_landmarker(pose_landmarker_path)
         cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            return f"❌ Не удалось открыть {video_path}"
-
-        original_fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        frame_step = max(1, int(original_fps // target_fps))
-
-        with mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=2,
-            model_complexity=0,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.25,
-        ) as hands:
-
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_step = max(1, int(fps // target_fps))
+        if cap.isOpened():         
             frames = []
             frame_idx = 0
-
+            last_timestamp = -1
+            
             while True:
+                if frame_idx % frame_step != 0:
+                    skip_count = frame_step - 1
+                    for _ in range(skip_count):
+                        ret = cap.grab()
+                        if not ret:
+                            break
+                    frame_idx += skip_count
+                    continue
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -48,39 +122,74 @@ def process_video(video_path: str, output_pt: str, target_fps: int):
                     continue
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                result = hands.process(frame_rgb)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
+                timestamp = int((frame_idx / fps) * 1000)
+                if timestamp <= last_timestamp:
+                    timestamp = last_timestamp + 1
+                last_timestamp = timestamp
+                
+                try:
+                    pose_result = pose_landmarker.detect_for_video(mp_image, timestamp)
+                    hand_result = hand_landmarker.detect_for_video(mp_image, timestamp)
+                except Exception as e:
+                    print(f"Ошибка детекции на кадре {frame_idx}: {e}")
+                    frame_idx += 1
+                    continue
+                
                 # [2, 21, 3] — Left, Right
-                frame_data = np.zeros((2, 21, 3), dtype=np.float32)
+                frame_hands_data = np.empty((2,21,3), np.float32)
+                frame_hands_data.fill(0)
 
-                if result.multi_hand_landmarks and result.multi_handedness:
-                    for lm, handedness in zip(
-                        result.multi_hand_landmarks,
-                        result.multi_handedness
-                    ):
-                        hand_id = 0 if handedness.classification[0].label == "Left" else 1
-                        for i, p in enumerate(lm.landmark):
-                            frame_data[hand_id, i] = (p.x, p.y, p.z)
+                # [24, 4]
+                frame_pose_data = np.empty((24,4), np.float32)
+                frame_pose_data.fill(0)
+
+                if hand_result and hand_result.hand_landmarks:
+                    for hand_idx, hand_landmarks in enumerate(hand_result.hand_landmarks[:2]):
+                        for i, lm in enumerate(hand_landmarks[:21]):
+                            frame_hands_data[hand_idx, i] = (lm.x, lm.y, lm.z)
+
+                if pose_result and pose_result.pose_landmarks:
+                    for i, idx in enumerate(POSE_UPPER_BODY_INDICES):
+                        if idx < len(pose_result.pose_landmarks[0]):
+                            lm = pose_result.pose_landmarks[0][idx]
+                            frame_pose_data[i] = (
+                                lm.x,
+                                lm.y,
+                                lm.z,
+                                lm.visibility
+                            )
+
+                frame_data = normalize_frame(
+                    frame_hands_data,
+                    frame_pose_data
+                )
 
                 frames.append(frame_data)
                 frame_idx += 1
 
         cap.release()
+        hand_landmarker.close()
+        pose_landmarker.close()
 
         if not frames:
             return f"⚠️ Пустое видео: {video_path}"
 
-        data = np.stack(frames) 
-        tensor = torch.from_numpy(data)
+        tensor = torch.from_numpy(np.stack(frames))
 
         os.makedirs(os.path.dirname(output_pt), exist_ok=True)
         torch.save(tensor, output_pt)
 
-        return f"✅ {os.path.basename(video_path)} → {tensor.shape}"
+        return
 
     except Exception as e:
         return f"❌ Ошибка {os.path.basename(video_path)}: {e}"
 
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
 
 # ======================================================
 # MAIN
@@ -91,14 +200,30 @@ def main():
     parser.add_argument("-ds", "--input", default="SlovoDS")
     parser.add_argument("-o", "--output", default="CreatedDS")
     parser.add_argument("-ag", "--allowedGestures", default="AllowedGestures.csv")
-    parser.add_argument("--fps", type=int, default=6)
+    parser.add_argument("--hand_landmarker_path", default="../../Assets/hand_landmarker.task")
+    parser.add_argument("--pose_landmarker_path", default="../../Assets/pose_landmarker.task")
+    parser.add_argument("--fps", type=int, default=12)
+    
     args = parser.parse_args()
 
     dataset_path = args.input
     output_path = args.output
+    hand_landmarker_path = args.hand_landmarker_path
+    pose_landmarker_path = args.pose_landmarker_path
+    workers = min(4, os.cpu_count() - 1)
+    cv2.setNumThreads(1)
+    torch.set_num_threads(1)
 
     os.makedirs(output_path, exist_ok=True)
 
+    if not os.path.isfile(hand_landmarker_path):
+        print("hand_landmarker.task not found")
+        return
+    
+    if not os.path.isfile(pose_landmarker_path):
+        print("pose_landmarker.task not found")
+        return
+    
     # --------------------------------------------------
     # Allowed gestures
     # --------------------------------------------------
@@ -151,16 +276,52 @@ def main():
     # --------------------------------------------------
     # Parallel processing
     # --------------------------------------------------
-    with tqdm.tqdm(total=len(jobs), desc="Обработка") as bar:
-        with ProcessPoolExecutor(max_workers=os.cpu_count() - 1) as pool:
-            futures = [
-                pool.submit(process_video, v, o, args.fps)
-                for v, o in jobs
-            ]
-            for f in as_completed(futures):
-                bar.update(1)
-                tqdm.tqdm.write(f.result())
+    
+    executor = ProcessPoolExecutor(max_workers=workers)
 
+    try:
+        with tqdm.tqdm(total=len(jobs), desc="Обработка", smoothing=0.1) as bar:
 
+            for batch in chunks(jobs, workers * 2):
+
+                futures = [
+                    executor.submit(
+                        process_video,
+                        v,
+                        o,
+                        hand_landmarker_path,
+                        pose_landmarker_path,
+                        args.fps
+                    )
+                    for v, o in batch
+                ]
+
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            tqdm.tqdm.write(result)
+                    except Exception as e:
+                        tqdm.tqdm.write(f"Ошибка: {e}")
+
+                    bar.update(1)
+
+    except KeyboardInterrupt:
+        print("\nОстановка...")
+
+        executor.shutdown(
+            wait=False,
+            cancel_futures=True
+        )
+
+        import psutil
+        for p in psutil.Process().children(recursive=True):
+            p.kill()
+
+        raise SystemExit
+
+    finally:
+        executor.shutdown(wait=False)
+                
 if __name__ == "__main__":
     main()
